@@ -16,11 +16,15 @@ function getDatabaseUrl(): string {
 }
 
 /**
- * Neon's serverless HTTP driver only speaks to Neon's endpoint proxy, so local
- * development against a plain Postgres (e.g. `postgres://localhost/...`) uses
- * node-postgres instead. Anything with a real host (Neon, Supabase, etc.) uses
- * the serverless driver, which is what Vercel's function runtime needs.
+ * Neon's serverless HTTP driver only speaks Neon's own endpoint protocol, so it
+ * is used exclusively for Neon hosts. Everything else — Supabase's Postgres or a
+ * plain local Postgres (e.g. `postgres://localhost/...`) — goes through
+ * node-postgres, which speaks the standard wire protocol.
  */
+function isNeonHost(url: string): boolean {
+  return new URL(url).hostname.endsWith(".neon.tech");
+}
+
 function isLocalDatabaseUrl(url: string): boolean {
   const host = new URL(url).hostname;
   return host === "localhost" || host === "127.0.0.1";
@@ -28,6 +32,17 @@ function isLocalDatabaseUrl(url: string): boolean {
 
 const databaseUrl = getDatabaseUrl();
 
-export const db = isLocalDatabaseUrl(databaseUrl)
-  ? drizzlePg(new Pool({ connectionString: databaseUrl }), { schema })
-  : drizzleNeon(neon(databaseUrl), { schema });
+export const db = isNeonHost(databaseUrl)
+  ? drizzleNeon(neon(databaseUrl), { schema })
+  : drizzlePg(
+      new Pool({
+        connectionString: databaseUrl,
+        // Supabase (and other managed Postgres) require TLS; their pooler certs
+        // aren't always in Node's default trust store, so don't hard-fail on the
+        // chain. Local Postgres connects without TLS.
+        ssl: isLocalDatabaseUrl(databaseUrl)
+          ? undefined
+          : { rejectUnauthorized: false },
+      }),
+      { schema },
+    );
