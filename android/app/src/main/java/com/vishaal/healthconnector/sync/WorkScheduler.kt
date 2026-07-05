@@ -47,22 +47,48 @@ object WorkScheduler {
         )
     }
 
-    /** Registers both workers; call once permissions are confirmed granted. */
+    /** Enqueues the 15-minute periodic write drain (server -> Health Connect), if not already enqueued. */
+    fun enqueuePeriodicWriteDrain(context: Context) {
+        val request = PeriodicWorkRequestBuilder<WriteWorker>(15, TimeUnit.MINUTES)
+            .setConstraints(SYNC_CONSTRAINTS)
+            .build()
+        WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+            WriteWorker.PERIODIC_UNIQUE_WORK_NAME,
+            ExistingPeriodicWorkPolicy.KEEP,
+            request,
+        )
+    }
+
+    /** Registers all workers; call once permissions are confirmed granted. */
     fun enqueueAll(context: Context) {
         enqueueInitialBackfill(context)
         enqueuePeriodicSync(context)
+        enqueuePeriodicWriteDrain(context)
     }
 
-    /** "Sync now" button on the status screen: runs the same incremental sync logic ASAP. */
+    /**
+     * "Sync now" button on the status screen: runs the incremental read sync AND the write drain
+     * ASAP, so queued writes land without waiting for the next periodic window.
+     */
     fun enqueueExpeditedSyncNow(context: Context) {
-        val request = OneTimeWorkRequestBuilder<SyncWorker>()
+        val syncRequest = OneTimeWorkRequestBuilder<SyncWorker>()
             .setConstraints(SYNC_CONSTRAINTS)
             .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
             .build()
         WorkManager.getInstance(context).enqueueUniqueWork(
             SyncWorker.EXPEDITED_UNIQUE_WORK_NAME,
             ExistingWorkPolicy.REPLACE,
-            request,
+            syncRequest,
+        )
+
+        val writeRequest = OneTimeWorkRequestBuilder<WriteWorker>()
+            .setConstraints(SYNC_CONSTRAINTS)
+            .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+            .build()
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            WriteWorker.EXPEDITED_UNIQUE_WORK_NAME,
+            ExistingWorkPolicy.REPLACE,
+            writeRequest,
         )
     }
 

@@ -52,18 +52,35 @@ object HealthConnectManager {
         }
 
     /**
-     * The complete permission set this app ever requests: one READ permission per record
-     * type in [RecordTypes.ALL] (derived via the SDK's own [HealthPermission.getReadPermission]
-     * so we never hand-mismatch a record type to the wrong permission string) plus the two
-     * background/history permissions that aren't tied to a specific record type.
+     * READ permissions the app depends on to do its core job (sync every readable type to the
+     * backend): one per record type in [RecordTypes.ALL] plus the two background/history
+     * permissions. These are the permissions that *gate* enabling the sync workers — the app is
+     * useless without them.
      */
-    fun requiredPermissions(): Set<String> {
+    fun readPermissions(): Set<String> {
         val recordPermissions = RecordTypes.ALL.map { info ->
             HealthPermission.getReadPermission(info.kClass)
         }
         return (recordPermissions + PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND + PERMISSION_READ_HEALTH_DATA_HISTORY)
             .toSet()
     }
+
+    /**
+     * WRITE permissions for the writable subset ([WritableRecordTypes.ALL]) — the types Claude is
+     * allowed to write back into Health Connect. These are OPTIONAL: the app requests them, but
+     * declining them only disables writes for those types, it doesn't stop read-sync. [WriteWorker]
+     * re-checks each type's write permission at drain time.
+     */
+    fun writePermissions(): Set<String> =
+        WritableRecordTypes.ALL.map { HealthPermission.getWritePermission(it.kClass) }.toSet()
+
+    /**
+     * The complete permission set this app ever requests: [readPermissions] + [writePermissions].
+     * Used to launch the Health Connect permission request. Derived via the SDK's own
+     * [HealthPermission.getReadPermission]/[HealthPermission.getWritePermission] so we never
+     * hand-mismatch a record type to the wrong permission string.
+     */
+    fun requiredPermissions(): Set<String> = readPermissions() + writePermissions()
 
     /** Permissions from [requiredPermissions] that Health Connect currently reports as granted. */
     suspend fun getGrantedPermissions(context: Context): Set<String> {
