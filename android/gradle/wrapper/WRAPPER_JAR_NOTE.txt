@@ -1,0 +1,26 @@
+This directory is missing gradle-wrapper.jar.
+
+gradle-wrapper.jar is a small compiled binary (not source text) that Gradle
+normally generates via `gradle wrapper`. Generating it here required
+resolving the Android Gradle Plugin from Google's Maven repo (dl.google.com)
+to evaluate build.gradle.kts, and that host is blocked by this sandbox's
+egress policy — so it could not be generated in this environment.
+
+This is not a blocker for CI: .github/workflows/android-debug-apk.yml invokes
+`gradle` directly (via gradle/actions/setup-gradle) instead of `./gradlew`,
+which has no dependency on this jar and runs on GitHub-hosted runners with
+unrestricted network access.
+
+gradle-wrapper.properties (this directory) and the gradlew / gradlew.bat
+scripts (android/gradlew, android/gradlew.bat) are standard, deterministic
+text content for the Gradle version pinned in gradle-wrapper.properties
+(8.10.2).
+
+To use `./gradlew` locally (e.g. from a terminal instead of Android Studio),
+run one of:
+  - `gradle wrapper --gradle-version 8.10.2` from the android/ directory
+    with any local Gradle install and normal network access, which will
+    (re)generate gradle/wrapper/gradle-wrapper.jar to match the properties
+    file already committed here, or
+  - Open the project in Android Studio, which will offer to sync/regenerate
+    the wrapper automatically.

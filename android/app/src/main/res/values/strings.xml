@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Health Connector</string>
+    <string name="privacy_policy_title">Health Data Privacy</string>
+    <string name="privacy_policy_body">Health Connector reads the Health Connect data you
+        grant it access to (activity, body measurements, cycle tracking, nutrition, sleep,
+        and vitals) and uploads it over an encrypted connection to the backend server you
+        configure in Settings, so that server can make your data available to your own
+        Claude MCP integration. Data is never sent anywhere else, and you can revoke access
+        at any time from the Health Connect app or Android Settings.</string>
+</resources>

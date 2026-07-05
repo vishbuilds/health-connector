@@ -1,0 +1,42 @@
+{
+  "name": "health-connector-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "db:generate": "drizzle-kit generate",
+    "db:push": "drizzle-kit push",
+    "db:seed": "tsx scripts/seed.ts",
+    "auth:seed-user": "tsx scripts/seed-user.ts",
+    "auth:generate-schema": "better-auth generate --config lib/auth.ts --output db/auth-schema.ts -y"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "@neondatabase/serverless": "^1.1.0",
+    "better-auth": "^1.6.23",
+    "drizzle-orm": "^0.45.2",
+    "luxon": "^3.5.0",
+    "mcp-handler": "^1.1.0",
+    "next": "^16.2.10",
+    "pg": "^8.22.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@better-auth/cli": "^1.4.21",
+    "@types/luxon": "^3.4.2",
+    "@types/node": "^22.10.5",
+    "@types/pg": "^8.20.0",
+    "@types/react": "^19.0.7",
+    "@types/react-dom": "^19.0.3",
+    "drizzle-kit": "^0.31.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}

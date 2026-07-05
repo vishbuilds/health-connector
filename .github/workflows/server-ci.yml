@@ -1,0 +1,42 @@
+name: Server CI
+
+on:
+  push:
+    paths:
+      - "server/**"
+      - ".github/workflows/server-ci.yml"
+  pull_request:
+    paths:
+      - "server/**"
+      - ".github/workflows/server-ci.yml"
+
+jobs:
+  build:
+    name: Typecheck & build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      - name: Build
+        # Dummy env vars: this build only checks that the app compiles and every
+        # route/page is well-formed, it never talks to a real database.
+        env:
+          DATABASE_URL: postgres://user:pass@localhost:5432/dummy
+          INGEST_SECRET: ci-dummy-secret
+          BETTER_AUTH_SECRET: ci-dummy-secret-32-bytes-minimum
+          BETTER_AUTH_URL: http://localhost:3000
+          OWNER_EMAIL: owner@example.com
+        run: npm run build
