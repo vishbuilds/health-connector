@@ -7,7 +7,8 @@ plugins {
 
 android {
     namespace = "com.vishaal.healthconnector"
-    compileSdk = 35
+    // connect-client:1.1.0 requires consumers to compile against API 36+.
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.vishaal.healthconnector"
