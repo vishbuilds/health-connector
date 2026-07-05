@@ -49,25 +49,45 @@ function inRange(start: Date, end: Date) {
   return and(gte(healthRecords.startTime, start), lt(healthRecords.startTime, end), isNull(healthRecords.deletedAt));
 }
 
+/**
+ * Sums a numeric jsonb field for an interval record type across the day,
+ * DE-DUPLICATED by source app. Multiple apps often record the same activity
+ * (e.g. a phone pedometer AND an Oura ring both log steps), so naively summing
+ * every record double-counts. We sum within each source app, then take the
+ * largest single-source total — a simple stand-in for Health Connect's own
+ * priority-based cross-source de-duplication. Single-source days are unaffected.
+ */
 async function sumField(recordType: string, field: string, start: Date, end: Date): Promise<number | null> {
-  const rows = await db
+  const perSource = db
     .select({
-      total: sql<string>`coalesce(sum((${healthRecords.data}->>${field})::numeric), 0)`,
+      srcTotal: sql<string>`coalesce(sum((${healthRecords.data}->>${field})::numeric), 0)`.as("src_total"),
     })
     .from(healthRecords)
-    .where(and(eq(healthRecords.recordType, recordType), inRange(start, end)));
+    .where(and(eq(healthRecords.recordType, recordType), inRange(start, end)))
+    .groupBy(healthRecords.sourceApp)
+    .as("per_source");
+
+  const rows = await db.select({ total: sql<string>`coalesce(max(${perSource.srcTotal}), 0)` }).from(perSource);
   const total = rows[0]?.total;
   return total === undefined ? null : Number(total);
 }
 
-/** Sums (end_time - start_time) in minutes for an interval record type, e.g. sleep/exercise duration. */
+/**
+ * Sums (end_time - start_time) in minutes for an interval record type, e.g.
+ * sleep/exercise duration — de-duplicated by source app the same way as
+ * [sumField], since e.g. a phone and a ring may both log the same sleep.
+ */
 async function sumDurationMinutes(recordType: string, start: Date, end: Date): Promise<number | null> {
-  const rows = await db
+  const perSource = db
     .select({
-      total: sql<string>`coalesce(sum(extract(epoch from (${healthRecords.endTime} - ${healthRecords.startTime})) / 60), 0)`,
+      srcTotal: sql<string>`coalesce(sum(extract(epoch from (${healthRecords.endTime} - ${healthRecords.startTime})) / 60), 0)`.as("src_total"),
     })
     .from(healthRecords)
-    .where(and(eq(healthRecords.recordType, recordType), inRange(start, end)));
+    .where(and(eq(healthRecords.recordType, recordType), inRange(start, end)))
+    .groupBy(healthRecords.sourceApp)
+    .as("per_source");
+
+  const rows = await db.select({ total: sql<string>`coalesce(max(${perSource.srcTotal}), 0)` }).from(perSource);
   const total = rows[0]?.total;
   return total === undefined ? null : Number(total);
 }
@@ -112,7 +132,8 @@ export async function getDailySummary(date: string): Promise<DailySummary> {
       .select({ bpm: sql<string>`avg((${healthRecords.data}->>'restingHeartRateBpm')::numeric)` })
       .from(healthRecords)
       .where(and(eq(healthRecords.recordType, "RestingHeartRateRecord"), inRange(start, end)))
-      .then((rows) => (rows[0]?.bpm !== undefined ? Number(rows[0].bpm) : null)),
+      // avg() over zero rows is SQL NULL; report null (no data) rather than coercing to 0 bpm.
+      .then((rows) => (rows[0]?.bpm != null ? Number(rows[0].bpm) : null)),
     db
       .select({
         data: healthRecords.data,

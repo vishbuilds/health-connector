@@ -43,6 +43,12 @@ export const db = isNeonHost(databaseUrl)
         ssl: isLocalDatabaseUrl(databaseUrl)
           ? undefined
           : { rejectUnauthorized: false },
+        // Supabase's session pooler caps total client connections (pool_size 15).
+        // A single serverless instance runs a few queries in parallel (e.g. the
+        // daily summary fans out ~10), so keep each instance's pool small enough
+        // that concurrent instances don't exhaust the shared cap. Local Postgres
+        // has no such limit but a small pool is harmless there too.
+        max: isLocalDatabaseUrl(databaseUrl) ? 10 : 4,
       }),
       { schema },
     );
