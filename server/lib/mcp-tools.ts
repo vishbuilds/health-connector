@@ -6,6 +6,7 @@ import { db, runReadOnlyQuery, READ_ONLY_LIMITS } from "@/db/client";
 import { healthRecords, pendingWrites } from "@/db/schema";
 import { RECORD_TYPES } from "./record-types";
 import { WRITABLE_TYPES, WRITABLE_TYPE_WIRE_NAMES } from "./write-types";
+import { searchFoods } from "./food-db";
 
 const USER_TIMEZONE = "Australia/Sydney";
 
@@ -41,6 +42,7 @@ const DATA_SHAPES: Record<string, string> = {
 export function registerHealthTools(server: McpServer) {
   registerReadTool(server);
   registerWriteTool(server);
+  registerFoodMacrosTool(server);
   registerResources(server);
   registerPrompts(server);
 }
@@ -213,6 +215,73 @@ function registerWriteTool(server: McpServer) {
           },
         ],
       };
+    },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Food macros: look up authoritative nutrition data before logging a NutritionRecord,
+// so calories/protein/carbs/fat come from a database rather than a guess. Backed by a
+// self-hosted `foods` table (AUSNUT 2023 generic Australian foods + Open Food Facts AU
+// branded/packaged products), searched with Postgres full-text search — no external API.
+// The model scales the per-100g macros to the actual portion, then calls write_records.
+// ---------------------------------------------------------------------------
+
+const FOOD_MACROS_DESCRIPTION = `Look up food nutrition/macros from a local Australian food database (AUSNUT 2023 generic foods + Open Food Facts Australia branded/packaged products). Use this to get accurate calories and macronutrients BEFORE logging a meal with write_records — do not estimate macros from memory.
+
+Returns up to \`max_results\` matching foods, ranked by relevance. IMPORTANT: all macro values are PER 100 g (edible portion): energy_kcal, protein_g, carb_g, fat_g, plus fiber_g / sugar_g / sodium_mg when available. \`source\` is "ausnut" (generic AU foods, best for whole/home-cooked foods) or "off" (branded packaged products; \`brand\` and \`barcode\` are set). \`serving_desc\`/\`serving_g\` are optional serving hints from OFF.
+
+How to use the result:
+  1. Pick the food that best matches what was actually eaten (prefer a branded "off" match when the user named a brand; prefer "ausnut" for generic/whole foods).
+  2. Scale the per-100g macros to the real portion: for 150 g, multiply every macro by 1.5; for a serving given in grams, use that. Sodium is in mg.
+  3. Call write_records with a NutritionRecord: data { name, mealType (1 BREAKFAST / 2 LUNCH / 3 DINNER / 4 SNACK), energyKcal, proteinGrams, totalCarbohydrateGrams, totalFatGrams }. NutritionRecord is an interval type — set startTime and endTime.
+
+If the first query returns nothing, retry with fewer/simpler words (matching requires all terms). If nothing sensible matches, tell the user rather than guessing.`;
+
+function registerFoodMacrosTool(server: McpServer) {
+  server.registerTool(
+    "food_macros_search",
+    {
+      title: "Look up food macros (Australian food database)",
+      description: FOOD_MACROS_DESCRIPTION,
+      inputSchema: {
+        query: z
+          .string()
+          .min(1)
+          .describe('What to look up, e.g. "grilled chicken breast", "Weet-Bix", or a barcode.'),
+        max_results: z
+          .number()
+          .int()
+          .min(1)
+          .max(15)
+          .optional()
+          .describe("How many candidate foods to return (default 8)."),
+      },
+    },
+    async ({ query, max_results }) => {
+      try {
+        const foods = await searchFoods(query, max_results ?? 8);
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  query,
+                  count: foods.length,
+                  macros_basis: "per_100g",
+                  foods,
+                  note: "Macros are per 100 g. Pick the best match, scale to the actual portion, then log with write_records (NutritionRecord). If empty, retry with simpler terms.",
+                },
+                null,
+                2,
+              ),
+            },
+          ],
+        };
+      } catch (e) {
+        return { isError: true, content: [{ type: "text", text: `Lookup failed: ${(e as Error).message}` }] };
+      }
     },
   );
 }
