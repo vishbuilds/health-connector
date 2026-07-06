@@ -1,210 +1,100 @@
 /**
- * Allowlist + validation for records Claude is permitted to WRITE into Health Connect.
+ * Allowlist of record types Claude is permitted to WRITE into Health Connect.
  *
- * SECURITY: this file is the single gate on writes. A record type that is not listed here
- * can never be written, no matter what the caller sends. Each entry declares:
- *   - `shape`: "instant" (a point-in-time record with a single `startTime`) or "interval"
- *     (a record spanning `startTime`..`endTime`). Interval writes MUST supply `endTime`.
- *   - `dataSchema`: a strict Zod schema for the type-specific `data` payload, with
- *     physiological bounds so absurd/dangerous values are rejected server-side before they
- *     ever reach the phone. The field names/units match the wire DTO produced on read
- *     (see android RecordDto.kt) so a value written here reads back identically.
+ * SECURITY: this allowlist is the one deterministic write boundary that stays in code — a record
+ * type not listed here can never be queued, no matter what the caller sends (enforced by the Zod
+ * enum on the `write_records` tool's input schema). This is a *capability* gate, not a values
+ * gate: it decides which kinds of data the connector may write at all.
  *
- * The Android app mirrors this allowlist in WritableRecordTypes.kt / RecordWriter.kt; keep
- * the two in sync when adding a type. Writes are a much smaller, deliberately curated subset
- * of the ~35 readable types — start conservative and extend as needed.
+ * What is deliberately NOT enforced in code anymore: per-field physiological ranges, "endTime
+ * required for interval types", and future-timestamp checks. Those are guidance, surfaced to the
+ * model via each type's `description` (see the `health://writable-types` MCP resource) and the
+ * write tool's own description. The phone's Health Connect insert is the real gate on malformed
+ * writes: anything it rejects comes back as a `failed` row via /api/writes/ack, which is visible
+ * to the model. Start permissive; add a rail here only if a real bad write actually happens.
+ *
+ * The Android app mirrors this allowlist in WritableRecordTypes.kt / RecordWriter.kt; keep the
+ * two in sync when adding a type. Writes are a deliberately curated subset of the ~35 readable
+ * types — start conservative and extend as needed.
  */
-import { z } from "zod";
-
 export type WriteShape = "instant" | "interval";
 
 export interface WritableTypeDef {
   wireName: string;
+  /** "instant" = point-in-time (startTime only); "interval" = spans startTime..endTime. */
   shape: WriteShape;
-  /** Schema for the `data` object; bounds are inclusive and chosen to be physiologically safe. */
-  dataSchema: z.ZodType<Record<string, unknown>>;
-  /** Human description surfaced to Claude via `list_writable_data_types`. */
+  /** Human guidance surfaced to Claude: fields, units, and sensible ranges. */
   description: string;
 }
-
-// Common bounded number helper.
-const bounded = (min: number, max: number) => z.number().finite().min(min).max(max);
 
 export const WRITABLE_TYPES: WritableTypeDef[] = [
   {
     wireName: "WeightRecord",
     shape: "instant",
-    description: "Body weight. data: { weightKg: number (0–1000) }",
-    dataSchema: z.object({ weightKg: bounded(0, 1000) }).strict(),
+    description: "Body weight. data: { weightKg: number } — typically 0–1000.",
   },
   {
     wireName: "HeightRecord",
     shape: "instant",
-    description: "Body height. data: { heightMeters: number (0–3) }",
-    dataSchema: z.object({ heightMeters: bounded(0, 3) }).strict(),
+    description: "Body height. data: { heightMeters: number } — typically 0–3.",
   },
   {
     wireName: "BodyFatRecord",
     shape: "instant",
-    description: "Body fat percentage. data: { bodyFatPercentage: number (0–100) }",
-    dataSchema: z.object({ bodyFatPercentage: bounded(0, 100) }).strict(),
+    description: "Body fat percentage. data: { bodyFatPercentage: number } — 0–100.",
   },
   {
     wireName: "BodyTemperatureRecord",
     shape: "instant",
-    description: "Body temperature. data: { temperatureCelsius: number (20–45) }",
-    dataSchema: z.object({ temperatureCelsius: bounded(20, 45) }).strict(),
+    description: "Body temperature. data: { temperatureCelsius: number } — typically 20–45.",
   },
   {
     wireName: "BloodPressureRecord",
     shape: "instant",
     description:
-      "Blood pressure. data: { systolicMmHg: number (20–300), diastolicMmHg: number (10–250) }",
-    dataSchema: z
-      .object({ systolicMmHg: bounded(20, 300), diastolicMmHg: bounded(10, 250) })
-      .strict(),
+      "Blood pressure. data: { systolicMmHg: number, diastolicMmHg: number } — systolic ~20–300, diastolic ~10–250.",
   },
   {
     wireName: "BloodGlucoseRecord",
     shape: "instant",
-    description: "Blood glucose. data: { levelMgPerDl: number (0–1000) }",
-    dataSchema: z.object({ levelMgPerDl: bounded(0, 1000) }).strict(),
+    description: "Blood glucose. data: { levelMgPerDl: number } — typically 0–1000.",
   },
   {
     wireName: "OxygenSaturationRecord",
     shape: "instant",
-    description: "Blood oxygen saturation (SpO2). data: { oxygenSaturationPercentage: number (0–100) }",
-    dataSchema: z.object({ oxygenSaturationPercentage: bounded(0, 100) }).strict(),
+    description: "Blood oxygen saturation (SpO2). data: { oxygenSaturationPercentage: number } — 0–100.",
   },
   {
     wireName: "RestingHeartRateRecord",
     shape: "instant",
-    description: "Resting heart rate. data: { restingHeartRateBpm: integer (0–300) }",
-    dataSchema: z.object({ restingHeartRateBpm: z.number().int().min(0).max(300) }).strict(),
+    description: "Resting heart rate. data: { restingHeartRateBpm: integer } — typically 0–300.",
   },
   {
     wireName: "RespiratoryRateRecord",
     shape: "instant",
-    description: "Respiratory rate. data: { respiratoryRateBreathsPerMinute: number (0–100) }",
-    dataSchema: z.object({ respiratoryRateBreathsPerMinute: bounded(0, 100) }).strict(),
+    description: "Respiratory rate. data: { respiratoryRateBreathsPerMinute: number } — typically 0–100.",
   },
   {
     wireName: "HydrationRecord",
     shape: "interval",
-    description: "Water/fluid intake over a time span. data: { volumeLiters: number (0–10) }",
-    dataSchema: z.object({ volumeLiters: bounded(0, 10) }).strict(),
+    description: "Water/fluid intake over a time span. data: { volumeLiters: number } — typically 0–10. Requires endTime.",
   },
   {
     wireName: "StepsRecord",
     shape: "interval",
-    description: "Step count over a time span. data: { count: integer (0–1000000) }",
-    dataSchema: z.object({ count: z.number().int().min(0).max(1_000_000) }).strict(),
+    description: "Step count over a time span. data: { count: integer } — 0 or more. Requires endTime.",
   },
   {
     wireName: "NutritionRecord",
     shape: "interval",
     description:
-      "A logged food/meal over a time span. data: { name?: string, mealType?: integer (0–4), " +
-      "energyKcal?: number (0–20000), proteinGrams?: number (0–2000), " +
-      "totalCarbohydrateGrams?: number (0–2000), totalFatGrams?: number (0–2000) }",
-    dataSchema: z
-      .object({
-        name: z.string().max(200).optional(),
-        // Health Connect MealType constants: 0 UNKNOWN, 1 BREAKFAST, 2 LUNCH, 3 DINNER, 4 SNACK.
-        mealType: z.number().int().min(0).max(4).optional(),
-        energyKcal: bounded(0, 20000).optional(),
-        proteinGrams: bounded(0, 2000).optional(),
-        totalCarbohydrateGrams: bounded(0, 2000).optional(),
-        totalFatGrams: bounded(0, 2000).optional(),
-      })
-      .strict(),
+      "A logged food/meal over a time span. Requires endTime. data: { name?: string, " +
+      "mealType?: integer (Health Connect MealType: 0 UNKNOWN, 1 BREAKFAST, 2 LUNCH, 3 DINNER, 4 SNACK), " +
+      "energyKcal?: number, proteinGrams?: number, totalCarbohydrateGrams?: number, totalFatGrams?: number }.",
   },
 ];
-
-export const WRITABLE_TYPES_BY_NAME = new Map(WRITABLE_TYPES.map((t) => [t.wireName, t]));
 
 export const WRITABLE_TYPE_WIRE_NAMES = WRITABLE_TYPES.map((t) => t.wireName) as [
   string,
   ...string[],
 ];
-
-/** Max clock skew we accept on write timestamps: reject anything more than this into the future. */
-const MAX_FUTURE_SKEW_MS = 5 * 60 * 1000; // 5 minutes
-
-const isoInstant = z.string().datetime({ offset: true });
-const zoneOffset = z
-  .string()
-  .regex(/^[+-]\d{2}:\d{2}$/, "expected zone offset like +10:00")
-  .nullable()
-  .optional();
-
-/**
- * Validates a full write request (type + time bounds + type-specific data). Returns a
- * discriminated-union-style result so the caller can produce a precise error for Claude.
- */
-export function validateWrite(input: unknown):
-  | { ok: true; value: ValidatedWrite }
-  | { ok: false; error: string } {
-  const envelope = z
-    .object({
-      type: z.enum(WRITABLE_TYPE_WIRE_NAMES),
-      startTime: isoInstant,
-      endTime: isoInstant.nullable().optional(),
-      zoneOffset,
-      data: z.record(z.string(), z.unknown()),
-    })
-    .strict()
-    .safeParse(input);
-
-  if (!envelope.success) {
-    return { ok: false, error: envelope.error.issues.map((i) => i.message).join("; ") };
-  }
-
-  const def = WRITABLE_TYPES_BY_NAME.get(envelope.data.type)!;
-
-  const start = Date.parse(envelope.data.startTime);
-  if (Number.isNaN(start)) return { ok: false, error: "startTime is not a valid instant" };
-  if (start > Date.now() + MAX_FUTURE_SKEW_MS) {
-    return { ok: false, error: "startTime is too far in the future" };
-  }
-
-  let end: string | null = null;
-  if (def.shape === "interval") {
-    if (!envelope.data.endTime) {
-      return { ok: false, error: `${def.wireName} is an interval record and requires endTime` };
-    }
-    const endMs = Date.parse(envelope.data.endTime);
-    if (Number.isNaN(endMs)) return { ok: false, error: "endTime is not a valid instant" };
-    if (endMs <= start) return { ok: false, error: "endTime must be after startTime" };
-    if (endMs > Date.now() + MAX_FUTURE_SKEW_MS) {
-      return { ok: false, error: "endTime is too far in the future" };
-    }
-    end = envelope.data.endTime;
-  } else if (envelope.data.endTime) {
-    return { ok: false, error: `${def.wireName} is an instantaneous record; do not pass endTime` };
-  }
-
-  const data = def.dataSchema.safeParse(envelope.data.data);
-  if (!data.success) {
-    return { ok: false, error: data.error.issues.map((i) => `data.${i.path.join(".")}: ${i.message}`).join("; ") };
-  }
-
-  return {
-    ok: true,
-    value: {
-      type: envelope.data.type,
-      startTime: envelope.data.startTime,
-      endTime: end,
-      zoneOffset: envelope.data.zoneOffset ?? null,
-      data: data.data,
-    },
-  };
-}
-
-export interface ValidatedWrite {
-  type: string;
-  startTime: string;
-  endTime: string | null;
-  zoneOffset: string | null;
-  data: Record<string, unknown>;
-}

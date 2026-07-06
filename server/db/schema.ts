@@ -22,7 +22,7 @@ export const healthRecords = pgTable(
 
 /**
  * Queue of records Claude has asked to WRITE into Health Connect. Rows are created by the
- * `write_record` MCP tool (server side) and drained by the phone: it polls GET /api/writes
+ * `write_records` MCP tool (server side) and drained by the phone: it polls GET /api/writes
  * for `pending` rows, applies them to Health Connect, then POSTs /api/writes/ack to move
  * each row to `applied` or `failed`. The row `id` is used verbatim as the Health Connect
  * clientRecordId so re-delivery is idempotent (a retried write updates the same record).

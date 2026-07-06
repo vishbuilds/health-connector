@@ -2,8 +2,7 @@
  * Local dev helper: seeds a handful of fake health_records rows across
  * several types/days (including one spanning the AEST/AEDT boundary, which
  * in 2026 falls on the Australia/Sydney clock change April 5 and Oct 4) so
- * get_daily_summary and get_records can be exercised against real-shaped
- * data without a phone.
+ * query_health_data can be exercised against real-shaped data without a phone.
  */
 import { db } from "@/db/client";
 import { healthRecords } from "@/db/schema";
