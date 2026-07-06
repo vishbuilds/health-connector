@@ -12,6 +12,7 @@ android/.gradle/
 android/build/
 android/app/build/
 android/local.properties
+android/app/ci-debug-keystore.p12
 android/.idea/
 android/*.iml
 android/.cxx/

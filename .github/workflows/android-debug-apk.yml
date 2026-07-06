@@ -32,6 +32,9 @@ jobs:
           # AGP 8.9.1 requires Gradle 8.11.1+.
           gradle-version: "8.11.1"
 
+      - name: Decode stable debug keystore
+        run: base64 --decode app/ci-debug-keystore.p12.base64 > app/ci-debug-keystore.p12
+
       - name: Build debug APK
         # Uses the `gradle` binary provisioned above rather than ./gradlew:
         # gradle-wrapper.jar isn't checked in (see gradle/wrapper/WRAPPER_JAR_NOTE.txt),
