@@ -1,4 +1,4 @@
-import { bigserial, index, integer, jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core";
+import { bigserial, index, integer, jsonb, numeric, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
 export const healthRecords = pgTable(
   "health_records",
@@ -53,6 +53,23 @@ export const ingestLog = pgTable("ingest_log", {
   deletionCount: integer("deletion_count").notNull().default(0),
   recordTypes: jsonb("record_types"),
 });
+
+/**
+ * Single-row, single-user daily goals. There is exactly one row, keyed by the literal id
+ * "default"; the row is created lazily on first write (the `set_goals` MCP tool upserts it).
+ * When absent, both readers (/api/home and the health://goals MCP resource) fall back to
+ * DEFAULT_GOALS in lib/goals.ts — so no seed row is required. sleep is stored in minutes and
+ * hydration in liters, matching the units surfaced on the app's Home screen.
+ */
+export const userGoals = pgTable("user_goals", {
+  id: text("id").primaryKey().default("default"), // always "default"
+  stepsTarget: integer("steps_target").notNull().default(10000),
+  sleepMinutesTarget: integer("sleep_minutes_target").notNull().default(480), // 8h, stored in minutes
+  hydrationLitersTarget: numeric("hydration_liters_target").notNull().default("2.5"),
+  activeCaloriesTarget: integer("active_calories_target").notNull().default(500),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+export type UserGoalsRow = typeof userGoals.$inferSelect;
 
 export type HealthRecordRow = typeof healthRecords.$inferSelect;
 export type HealthRecordInsert = typeof healthRecords.$inferInsert;

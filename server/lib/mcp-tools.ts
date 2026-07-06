@@ -3,7 +3,8 @@ import { count, isNull, max, min } from "drizzle-orm";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { db, runReadOnlyQuery, READ_ONLY_LIMITS } from "@/db/client";
-import { healthRecords, pendingWrites } from "@/db/schema";
+import { healthRecords, pendingWrites, userGoals } from "@/db/schema";
+import { getGoals } from "./goals";
 import { RECORD_TYPES } from "./record-types";
 import { WRITABLE_TYPES, WRITABLE_TYPE_WIRE_NAMES } from "./write-types";
 import { searchFoods } from "./food-db";
@@ -43,6 +44,7 @@ export function registerHealthTools(server: McpServer) {
   registerReadTool(server);
   registerWriteTool(server);
   registerFoodMacrosTool(server);
+  registerGoals(server);
   registerResources(server);
   registerPrompts(server);
 }
@@ -282,6 +284,74 @@ function registerFoodMacrosTool(server: McpServer) {
       } catch (e) {
         return { isError: true, content: [{ type: "text", text: `Lookup failed: ${(e as Error).message}` }] };
       }
+    },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Goals: the user's daily targets (steps / sleep / hydration / active calories).
+// Readable as a resource and writable via a tool. Single-owner by construction —
+// the write path is gated by the owner's MCP OAuth session, same as write_records.
+// Backs the app's Home screen progress rings via GET /api/home.
+// ---------------------------------------------------------------------------
+
+function registerGoals(server: McpServer) {
+  server.registerResource(
+    "goals",
+    "health://goals",
+    {
+      title: "Daily health goals",
+      description:
+        "The user's current daily targets: steps, sleep (minutes), hydration (liters), and active " +
+        "calories. These drive the progress rings on the app's Home screen. Update them with set_goals.",
+      mimeType: "application/json",
+    },
+    async (uri) => {
+      const goals = await getGoals();
+      return { contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(goals, null, 2) }] };
+    },
+  );
+
+  server.registerTool(
+    "set_goals",
+    {
+      title: "Set daily health goals",
+      description:
+        "Update the user's daily targets that power the Home screen progress rings. Every field is " +
+        "optional — pass only the ones you want to change; the rest keep their current value. Sleep is " +
+        "in MINUTES (e.g. 480 = 8 hours), hydration in LITERS, steps and active calories are counts. " +
+        "Read the current values from the health://goals resource first.",
+      inputSchema: {
+        stepsTarget: z.number().int().positive().optional().describe("Daily step goal, e.g. 10000."),
+        sleepMinutesTarget: z.number().int().positive().optional().describe("Daily sleep goal in MINUTES, e.g. 480 for 8h."),
+        hydrationLitersTarget: z.number().positive().optional().describe("Daily hydration goal in LITERS, e.g. 2.5."),
+        activeCaloriesTarget: z.number().int().positive().optional().describe("Daily active-calories goal, e.g. 500."),
+      },
+    },
+    async (updates) => {
+      const set: Record<string, unknown> = { updatedAt: new Date() };
+      if (updates.stepsTarget !== undefined) set.stepsTarget = updates.stepsTarget;
+      if (updates.sleepMinutesTarget !== undefined) set.sleepMinutesTarget = updates.sleepMinutesTarget;
+      if (updates.hydrationLitersTarget !== undefined) set.hydrationLitersTarget = String(updates.hydrationLitersTarget);
+      if (updates.activeCaloriesTarget !== undefined) set.activeCaloriesTarget = updates.activeCaloriesTarget;
+
+      await db
+        .insert(userGoals)
+        .values({
+          id: "default",
+          ...(updates.stepsTarget !== undefined ? { stepsTarget: updates.stepsTarget } : {}),
+          ...(updates.sleepMinutesTarget !== undefined ? { sleepMinutesTarget: updates.sleepMinutesTarget } : {}),
+          ...(updates.hydrationLitersTarget !== undefined
+            ? { hydrationLitersTarget: String(updates.hydrationLitersTarget) }
+            : {}),
+          ...(updates.activeCaloriesTarget !== undefined ? { activeCaloriesTarget: updates.activeCaloriesTarget } : {}),
+        })
+        .onConflictDoUpdate({ target: userGoals.id, set });
+
+      const goals = await getGoals();
+      return {
+        content: [{ type: "text", text: JSON.stringify({ updated: true, goals }, null, 2) }],
+      };
     },
   );
 }
