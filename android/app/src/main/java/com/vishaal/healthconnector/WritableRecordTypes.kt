@@ -3,6 +3,7 @@ package com.vishaal.healthconnector
 import androidx.health.connect.client.records.BloodGlucoseRecord
 import androidx.health.connect.client.records.BloodPressureRecord
 import androidx.health.connect.client.records.BodyFatRecord
+import androidx.health.connect.client.records.BasalMetabolicRateRecord
 import androidx.health.connect.client.records.BodyTemperatureRecord
 import androidx.health.connect.client.records.HeightRecord
 import androidx.health.connect.client.records.HydrationRecord
@@ -32,6 +33,7 @@ object WritableRecordTypes {
         info(WeightRecord::class, HealthDataCategory.BODY_MEASUREMENT),
         info(HeightRecord::class, HealthDataCategory.BODY_MEASUREMENT),
         info(BodyFatRecord::class, HealthDataCategory.BODY_MEASUREMENT),
+        info(BasalMetabolicRateRecord::class, HealthDataCategory.BODY_MEASUREMENT),
         info(BodyTemperatureRecord::class, HealthDataCategory.VITALS),
         info(BloodPressureRecord::class, HealthDataCategory.VITALS),
         info(BloodGlucoseRecord::class, HealthDataCategory.VITALS),

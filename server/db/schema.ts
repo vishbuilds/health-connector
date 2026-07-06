@@ -1,4 +1,5 @@
-import { bigserial, index, integer, jsonb, numeric, pgTable, text, timestamp } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { bigserial, index, integer, jsonb, numeric, pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
 
 export const healthRecords = pgTable(
   "health_records",
@@ -39,10 +40,16 @@ export const pendingWrites = pgTable(
     status: text("status").notNull().default("pending"), // pending | applied | failed
     error: text("error"), // failure reason reported by the phone, if status = failed
     healthConnectId: text("health_connect_id"), // HC metadata.id assigned on successful insert
+    dedupeKey: text("dedupe_key"), // stable model/app key for create-or-update semantics before phone sync
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     appliedAt: timestamp("applied_at", { withTimezone: true }),
   },
-  (table) => [index("idx_pending_writes_status").on(table.status)],
+  (table) => [
+    index("idx_pending_writes_status").on(table.status),
+    uniqueIndex("idx_pending_writes_pending_dedupe_key")
+      .on(table.dedupeKey)
+      .where(sql`dedupe_key IS NOT NULL AND status = 'pending'`),
+  ],
 );
 
 export const ingestLog = pgTable("ingest_log", {
@@ -76,6 +83,20 @@ export const userGoals = pgTable("user_goals", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 export type UserGoalsRow = typeof userGoals.$inferSelect;
+
+/**
+ * Canonical owner profile facts used by both Home and MCP. These are not Health Connect
+ * observations: they are stable profile values Claude can read/update intentionally.
+ */
+export const userProfile = pgTable("user_profile", {
+  id: text("id").primaryKey().default("default"), // always "default"
+  sex: text("sex").notNull().default("male"), // male | female
+  dateOfBirth: text("date_of_birth").notNull().default("2000-06-28"), // YYYY-MM-DD
+  heightCm: numeric("height_cm").notNull().default("165"),
+  bmrFormula: text("bmr_formula").notNull().default("auto"), // auto | katch_mcardle | mifflin_st_jeor
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+export type UserProfileRow = typeof userProfile.$inferSelect;
 
 export type HealthRecordRow = typeof healthRecords.$inferSelect;
 export type HealthRecordInsert = typeof healthRecords.$inferInsert;

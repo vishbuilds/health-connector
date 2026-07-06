@@ -1,4 +1,6 @@
 .context
+.agents
+skills-lock.json
 android
 .git
 .github

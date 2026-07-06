@@ -23,3 +23,7 @@ android/captures/
 *.swp
 .vercel
 .env*
+
+# Local agent tooling
+.agents/
+skills-lock.json

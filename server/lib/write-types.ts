@@ -44,6 +44,12 @@ export const WRITABLE_TYPES: WritableTypeDef[] = [
     description: "Body fat percentage. data: { bodyFatPercentage: number } — 0–100.",
   },
   {
+    wireName: "BasalMetabolicRateRecord",
+    shape: "instant",
+    description:
+      "Measured or explicitly chosen basal metabolic rate. data: { basalMetabolicRateKcalPerDay: number } — kcal/day. Use profile-derived BMR for calculations unless the user explicitly asks to log a BMR record.",
+  },
+  {
     wireName: "BodyTemperatureRecord",
     shape: "instant",
     description: "Body temperature. data: { temperatureCelsius: number } — typically 20–45.",

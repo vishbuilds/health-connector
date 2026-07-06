@@ -3,6 +3,7 @@ package com.vishaal.healthconnector.network.dto
 import androidx.health.connect.client.records.BloodGlucoseRecord
 import androidx.health.connect.client.records.BloodPressureRecord
 import androidx.health.connect.client.records.BodyFatRecord
+import androidx.health.connect.client.records.BasalMetabolicRateRecord
 import androidx.health.connect.client.records.BodyTemperatureRecord
 import androidx.health.connect.client.records.HeightRecord
 import androidx.health.connect.client.records.HydrationRecord
@@ -20,6 +21,7 @@ import androidx.health.connect.client.units.Energy
 import androidx.health.connect.client.units.Length
 import androidx.health.connect.client.units.Mass
 import androidx.health.connect.client.units.Percentage
+import androidx.health.connect.client.units.Power
 import androidx.health.connect.client.units.Pressure
 import androidx.health.connect.client.units.Temperature
 import androidx.health.connect.client.units.Volume
@@ -78,6 +80,12 @@ object RecordWriter {
                 time = start,
                 zoneOffset = offset,
                 percentage = Percentage(data.reqDouble("bodyFatPercentage")),
+                metadata = metadata,
+            )
+            "BasalMetabolicRateRecord" -> BasalMetabolicRateRecord(
+                time = start,
+                zoneOffset = offset,
+                basalMetabolicRate = Power.watts(data.reqDouble("basalMetabolicRateKcalPerDay") * 4184.0 / 86400.0),
                 metadata = metadata,
             )
             "BodyTemperatureRecord" -> BodyTemperatureRecord(

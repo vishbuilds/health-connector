@@ -66,6 +66,14 @@ data class HomeLever(
     val period: String,
     val detail: String,
     val action: String,
+    val lineItems: List<HomeLeverLineItem>,
+)
+
+/** One label/value row shown when a Home lever is expanded. */
+data class HomeLeverLineItem(
+    val label: String,
+    val value: String,
+    val time: String? = null,
 )
 
 /** One 0..100 daily score point, oldest → newest for trend charts. */
@@ -242,6 +250,13 @@ class HomeApi(private val settingsStore: SettingsStore) {
         period = this["period"]?.jsonPrimitive?.contentOrNull ?: "day",
         detail = this["detail"]?.jsonPrimitive?.contentOrNull ?: "",
         action = this["action"]?.jsonPrimitive?.contentOrNull ?: "",
+        lineItems = this["lineItems"]?.jsonArray?.mapNotNull { el ->
+            val o = el.jsonObject
+            val label = o["label"]?.jsonPrimitive?.contentOrNull
+            val value = o["value"]?.jsonPrimitive?.contentOrNull
+            val time = o["time"]?.jsonPrimitive?.contentOrNull
+            if (label != null && value != null) HomeLeverLineItem(label, value, time) else null
+        } ?: emptyList(),
     )
 
     private fun JsonObject.toRecoveryScore(): HomeRecoveryScore = HomeRecoveryScore(

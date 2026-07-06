@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { runReadOnlyQuery } from "@/db/client";
 import { isDeviceAuthorized } from "@/lib/device-auth";
 import { getGoals, type Goals } from "@/lib/goals";
+import { basalDayProgressFraction, deriveBmrKcalPerDay, getUserProfile } from "@/lib/profile";
 
 /**
  * Device-facing Home data for a bodyweight / body-recomposition goal. The screen is built around one
@@ -28,7 +29,9 @@ const numericSql = (jsonTextExpr: string) =>
 
 /**
  * One combined aggregate: today's deduped steps + protein + calorie balance inputs, this-week
- * workout sessions, and the latest body-fat reading. All aggregate CTEs return
+ * workout sessions, and the latest body-fat reading. Daily expenditure is intentionally
+ * derived in TypeScript as active calories + basal burn; raw TotalCaloriesBurnedRecord rows are
+ * interval observations and are not assumed to represent full-day expenditure. All aggregate CTEs return
  * exactly one row; the body-fat reading is a scalar subselect so an absent reading doesn't drop the
  * whole row. The timezone is a hard-coded constant (no user input), so interpolating it is safe.
  */
@@ -37,20 +40,31 @@ WITH params AS (
   SELECT DATE '${targetDate}' AS today
 ),
 actual_records AS (
-  SELECT record_type, start_time, end_time, data, source_app
-  FROM health_records
-  WHERE deleted_at IS NULL
+  SELECT hr.record_type, hr.start_time, hr.end_time, hr.data, hr.source_app
+  FROM health_records hr
+  WHERE hr.deleted_at IS NULL
+    AND NOT EXISTS (
+      SELECT 1
+      FROM pending_writes pw
+      WHERE pw.status = 'pending'
+        AND pw.health_connect_id IS NOT NULL
+        AND pw.health_connect_id = hr.id
+    )
 ),
 pending_records AS (
   SELECT pw.record_type, pw.start_time, pw.end_time, pw.data, '__pending_writes__'::text AS source_app
   FROM pending_writes pw
-  WHERE pw.status IN ('pending', 'applied')
+  WHERE (
+      pw.status = 'pending'
+      OR pw.status = 'applied'
+    )
     AND NOT EXISTS (
       SELECT 1
       FROM health_records hr
       WHERE hr.deleted_at IS NULL
         AND pw.health_connect_id IS NOT NULL
         AND hr.id = pw.health_connect_id
+        AND pw.status = 'applied'
     )
 ),
 combined_records AS (
@@ -140,17 +154,6 @@ nutrition_energy_today AS (
         AND (start_time AT TIME ZONE '${USER_TIMEZONE}')::date = params.today
     ), 0) AS v
 ),
-total_energy_today AS (
-  -- Total calories already include basal + active burn. De-dupe by source and keep the source with
-  -- the largest coverage for the day.
-  SELECT COALESCE(max(t.total), 0) AS v FROM (
-    SELECT source_app, sum(${numericSql("data->>'energyKcal'")}) AS total
-    FROM actual_records, params
-    WHERE record_type = 'TotalCaloriesBurnedRecord'
-      AND (start_time AT TIME ZONE '${USER_TIMEZONE}')::date = params.today
-    GROUP BY source_app
-  ) t
-),
 steps_7d AS (
   SELECT avg(day_total) AS v FROM (
     SELECT day, COALESCE(max(src_total), 0) + COALESCE(max(pending_total), 0) AS day_total FROM (
@@ -179,7 +182,6 @@ SELECT
   training_week.v     AS training_week,
   active_energy_today.v AS active_energy_today,
   nutrition_energy_today.v AS nutrition_energy_today,
-  total_energy_today.v AS total_energy_today,
   steps_7d.v          AS steps_7d,
   (SELECT ${numericSql("data->>'basalMetabolicRateKcalPerDay'")}
      FROM combined_records, params
@@ -200,7 +202,7 @@ SELECT
      FROM combined_records, params
      WHERE record_type = 'NutritionRecord'
        AND (start_time AT TIME ZONE '${USER_TIMEZONE}')::date = params.today - 1) AS protein_yesterday
-	FROM params, steps_today, protein_today, training_week, active_energy_today, nutrition_energy_today, total_energy_today, steps_7d
+	FROM params, steps_today, protein_today, training_week, active_energy_today, nutrition_energy_today, steps_7d
 `;
 /**
  * One row per local day (most-recent first) with a body weight, over the trend window. Multiple
@@ -212,19 +214,30 @@ WITH params AS (
   SELECT DATE '${targetDate}' AS today
 ),
 combined_records AS (
-  SELECT record_type, start_time, data
-  FROM health_records
-  WHERE deleted_at IS NULL
+  SELECT hr.record_type, hr.start_time, hr.data
+  FROM health_records hr
+  WHERE hr.deleted_at IS NULL
+    AND NOT EXISTS (
+      SELECT 1
+      FROM pending_writes pw
+      WHERE pw.status = 'pending'
+        AND pw.health_connect_id IS NOT NULL
+        AND pw.health_connect_id = hr.id
+    )
   UNION ALL
   SELECT record_type, start_time, data
   FROM pending_writes pw
-  WHERE pw.status IN ('pending', 'applied')
+  WHERE (
+      pw.status = 'pending'
+      OR pw.status = 'applied'
+    )
     AND NOT EXISTS (
       SELECT 1
       FROM health_records hr
       WHERE hr.deleted_at IS NULL
         AND pw.health_connect_id IS NOT NULL
         AND hr.id = pw.health_connect_id
+        AND pw.status = 'applied'
     )
 )
 SELECT
@@ -249,20 +262,31 @@ WITH params AS (
   SELECT DATE '${targetDate}' AS today
 ),
 actual_records AS (
-  SELECT record_type, start_time, end_time, data, source_app
-  FROM health_records
-  WHERE deleted_at IS NULL
+  SELECT hr.record_type, hr.start_time, hr.end_time, hr.data, hr.source_app
+  FROM health_records hr
+  WHERE hr.deleted_at IS NULL
+    AND NOT EXISTS (
+      SELECT 1
+      FROM pending_writes pw
+      WHERE pw.status = 'pending'
+        AND pw.health_connect_id IS NOT NULL
+        AND pw.health_connect_id = hr.id
+    )
 ),
 pending_records AS (
   SELECT pw.record_type, pw.start_time, pw.end_time, pw.data, '__pending_writes__'::text AS source_app
   FROM pending_writes pw
-  WHERE pw.status IN ('pending', 'applied')
+  WHERE (
+      pw.status = 'pending'
+      OR pw.status = 'applied'
+    )
     AND NOT EXISTS (
       SELECT 1
       FROM health_records hr
       WHERE hr.deleted_at IS NULL
         AND pw.health_connect_id IS NOT NULL
         AND hr.id = pw.health_connect_id
+        AND pw.status = 'applied'
     )
 ),
 combined_records AS (
@@ -329,6 +353,267 @@ LEFT JOIN rhr_daily ON rhr_daily.day = d.day
 ORDER BY d.day ASC
 `;
 
+const homeDetailRowsQuery = (targetDate: string) => `
+WITH params AS (
+  SELECT DATE '${targetDate}' AS today
+),
+actual_records AS (
+  SELECT hr.record_type, hr.start_time, hr.end_time, hr.data, hr.source_app
+  FROM health_records hr
+  WHERE hr.deleted_at IS NULL
+    AND NOT EXISTS (
+      SELECT 1
+      FROM pending_writes pw
+      WHERE pw.status = 'pending'
+        AND pw.health_connect_id IS NOT NULL
+        AND pw.health_connect_id = hr.id
+    )
+),
+pending_records AS (
+  SELECT pw.record_type, pw.start_time, pw.end_time, pw.data, '__pending_writes__'::text AS source_app
+  FROM pending_writes pw
+  WHERE (
+      pw.status = 'pending'
+      OR pw.status = 'applied'
+    )
+    AND NOT EXISTS (
+      SELECT 1
+      FROM health_records hr
+      WHERE hr.deleted_at IS NULL
+        AND pw.health_connect_id IS NOT NULL
+        AND hr.id = pw.health_connect_id
+        AND pw.status = 'applied'
+    )
+),
+combined_records AS (
+  SELECT * FROM actual_records
+  UNION ALL
+  SELECT * FROM pending_records
+),
+step_source_totals AS (
+  SELECT
+    source_app,
+    count(*) AS rows_count,
+    sum(${numericSql("data->>'count'")}) AS total,
+    min(start_time) AS first_start,
+    max(end_time) AS last_end,
+    false AS pending
+  FROM actual_records, params
+  WHERE record_type = 'StepsRecord'
+    AND (start_time AT TIME ZONE '${USER_TIMEZONE}')::date = params.today
+  GROUP BY source_app
+  UNION ALL
+  SELECT
+    source_app,
+    count(*) AS rows_count,
+    sum(${numericSql("data->>'count'")}) AS total,
+    min(start_time) AS first_start,
+    max(end_time) AS last_end,
+    true AS pending
+  FROM pending_records, params
+  WHERE record_type = 'StepsRecord'
+    AND (start_time AT TIME ZONE '${USER_TIMEZONE}')::date = params.today
+  GROUP BY source_app
+),
+nutrition_protein_source_totals AS (
+  SELECT
+    source_app,
+    sum(${numericSql("data->>'proteinGrams'")}) AS total
+  FROM actual_records, params
+  WHERE record_type = 'NutritionRecord'
+    AND (start_time AT TIME ZONE '${USER_TIMEZONE}')::date = params.today
+  GROUP BY source_app
+),
+nutrition_energy_source_totals AS (
+  SELECT
+    source_app,
+    sum(${numericSql("data->>'energyKcal'")}) AS total
+  FROM actual_records, params
+  WHERE record_type = 'NutritionRecord'
+    AND (start_time AT TIME ZONE '${USER_TIMEZONE}')::date = params.today
+  GROUP BY source_app
+),
+max_actual_steps AS (
+  SELECT max(total) AS total
+  FROM step_source_totals
+  WHERE pending = false
+),
+max_actual_protein AS (
+  SELECT max(total) AS total
+  FROM nutrition_protein_source_totals
+),
+max_actual_nutrition_energy AS (
+  SELECT max(total) AS total
+  FROM nutrition_energy_source_totals
+),
+active_burn_source_totals AS (
+  SELECT
+    source_app,
+    sum(${numericSql("data->>'energyKcal'")}) AS total
+  FROM actual_records, params
+  WHERE record_type = 'ActiveCaloriesBurnedRecord'
+    AND (start_time AT TIME ZONE '${USER_TIMEZONE}')::date = params.today
+  GROUP BY source_app
+),
+max_actual_active_burn AS (
+  SELECT max(total) AS total
+  FROM active_burn_source_totals
+),
+active_burn_logs AS (
+  SELECT
+    start_time,
+    end_time,
+    source_app,
+    ${numericSql("data->>'energyKcal'")} AS kcal
+  FROM actual_records, params
+  WHERE record_type = 'ActiveCaloriesBurnedRecord'
+    AND (start_time AT TIME ZONE '${USER_TIMEZONE}')::date = params.today
+    AND ${numericSql("data->>'energyKcal'")} IS NOT NULL
+    AND source_app IN (
+      SELECT source_app
+      FROM active_burn_source_totals
+      WHERE total = (SELECT total FROM max_actual_active_burn)
+    )
+),
+training_logs AS (
+  SELECT
+    start_time,
+    end_time,
+    source_app,
+    data
+  FROM actual_records, params
+  WHERE record_type = 'ExerciseSessionRecord'
+    AND (start_time AT TIME ZONE '${USER_TIMEZONE}')::date BETWEEN params.today - 6 AND params.today
+    AND (
+      source_app = 'com.hevy'
+      OR (source_app LIKE '%strava%' AND (data->>'exerciseType')::int IN (56, 57))
+    )
+)
+SELECT
+  COALESCE((
+    SELECT jsonb_agg(jsonb_build_object('time', time, 'label', label, 'value', value) ORDER BY sort_key)
+    FROM (
+      SELECT
+        start_time AS sort_key,
+        to_char(start_time AT TIME ZONE '${USER_TIMEZONE}', 'HH24:MI') AS time,
+        COALESCE(NULLIF(data->>'name', ''), 'Nutrition log') AS label,
+        concat(
+          round(${numericSql("data->>'proteinGrams'")}::numeric, 1)::text,
+          'g',
+          CASE
+            WHEN ${numericSql("data->>'energyKcal'")} IS NULL THEN ''
+            ELSE concat(' · ', round(${numericSql("data->>'energyKcal'")}::numeric)::text, ' kcal')
+          END
+        ) AS value
+      FROM combined_records, params
+      WHERE record_type = 'NutritionRecord'
+        AND (start_time AT TIME ZONE '${USER_TIMEZONE}')::date = params.today
+        AND ${numericSql("data->>'proteinGrams'")} IS NOT NULL
+        AND (
+          source_app = '__pending_writes__'
+          OR source_app IN (
+            SELECT source_app
+            FROM nutrition_protein_source_totals
+            WHERE total = (SELECT total FROM max_actual_protein)
+          )
+        )
+    ) protein_logs
+  ), '[]'::jsonb) AS protein_items,
+  COALESCE((
+    SELECT jsonb_agg(jsonb_build_object('time', time, 'label', label, 'value', value) ORDER BY sort_key)
+    FROM (
+      SELECT
+        start_time AS sort_key,
+        to_char(start_time AT TIME ZONE '${USER_TIMEZONE}', 'HH24:MI') AS time,
+        COALESCE(NULLIF(data->>'name', ''), 'Nutrition log') AS label,
+        concat(
+          round(${numericSql("data->>'energyKcal'")}::numeric)::text,
+          ' kcal',
+          CASE
+            WHEN ${numericSql("data->>'proteinGrams'")} IS NULL THEN ''
+            ELSE concat(' · ', round(${numericSql("data->>'proteinGrams'")}::numeric, 1)::text, 'g protein')
+          END
+        ) AS value
+      FROM combined_records, params
+      WHERE record_type = 'NutritionRecord'
+        AND (start_time AT TIME ZONE '${USER_TIMEZONE}')::date = params.today
+        AND ${numericSql("data->>'energyKcal'")} IS NOT NULL
+        AND (
+          source_app = '__pending_writes__'
+          OR source_app IN (
+            SELECT source_app
+            FROM nutrition_energy_source_totals
+            WHERE total = (SELECT total FROM max_actual_nutrition_energy)
+          )
+        )
+    ) intake_logs
+  ), '[]'::jsonb) AS intake_items,
+  COALESCE((
+    SELECT jsonb_agg(jsonb_build_object('time', time, 'label', label, 'value', value) ORDER BY sort_key)
+    FROM (
+      SELECT
+        first_start AS sort_key,
+        CASE
+          WHEN first_start IS NULL THEN NULL
+          ELSE to_char(first_start AT TIME ZONE '${USER_TIMEZONE}', 'HH24:MI')
+        END AS time,
+        CASE
+          WHEN source_app = 'com.ouraring.oura' THEN 'Oura steps'
+          WHEN source_app LIKE 'com.android.healthconnect.phone%' THEN 'Phone steps'
+          WHEN source_app = '__pending_writes__' THEN 'Pending steps'
+          ELSE source_app
+        END AS label,
+        concat(
+          to_char(round(COALESCE(total, 0)), 'FM999G999G999'),
+          ' steps'
+        ) AS value
+      FROM step_source_totals
+      WHERE COALESCE(total, 0) > 0
+        AND (
+          pending
+          OR total = (SELECT total FROM max_actual_steps)
+        )
+    ) step_logs
+  ), '[]'::jsonb) AS step_items,
+  COALESCE((
+    SELECT jsonb_agg(jsonb_build_object('time', time, 'label', label, 'value', value) ORDER BY sort_key)
+    FROM (
+      SELECT
+        start_time AS sort_key,
+        to_char(start_time AT TIME ZONE '${USER_TIMEZONE}', 'HH24:MI') AS time,
+        concat(
+          to_char(start_time AT TIME ZONE '${USER_TIMEZONE}', 'Mon DD'),
+          ' · ',
+          COALESCE(NULLIF(data->>'title', ''), CASE WHEN source_app LIKE '%strava%' THEN 'Run' ELSE 'Training session' END)
+        ) AS label,
+        concat(
+          round(extract(epoch FROM (COALESCE(end_time, start_time) - start_time)) / 60.0)::text,
+          ' min · ',
+          CASE
+            WHEN source_app = 'com.hevy' THEN 'Hevy'
+            WHEN source_app LIKE '%strava%' THEN 'Strava'
+            ELSE source_app
+          END
+        ) AS value
+      FROM training_logs
+    ) training_items
+  ), '[]'::jsonb) AS training_items,
+  COALESCE((
+    SELECT jsonb_agg(jsonb_build_object('time', time, 'label', label, 'value', value) ORDER BY sort_key)
+    FROM (
+      SELECT
+        start_time AS sort_key,
+        to_char(start_time AT TIME ZONE '${USER_TIMEZONE}', 'HH24:MI') AS time,
+        CASE
+          WHEN source_app = 'com.ouraring.oura' THEN 'Oura active burn'
+          ELSE source_app
+        END AS label,
+        concat(round(kcal)::text, ' kcal') AS value
+      FROM active_burn_logs
+    ) active_items
+  ), '[]'::jsonb) AS active_burn_items
+`;
+
 /** Numeric columns come back from the pg driver as strings (or null); coerce, treating null as null. */
 function num(v: unknown): number | null {
   if (v === null || v === undefined) return null;
@@ -338,6 +623,12 @@ function num(v: unknown): number | null {
 
 type StatusKey = "optimal" | "good" | "fair" | "attention";
 type WeightDirection = "loss" | "gain" | "maintenance";
+
+interface LeverLineItem {
+  label: string;
+  value: string;
+  time?: string;
+}
 
 /** A supporting lever tile (protein / training / steps / calorie balance). */
 interface Lever {
@@ -352,6 +643,42 @@ interface Lever {
   period: "day" | "week"; // "week" tiles read "this week"
   detail: string; // e.g. "142 / 150 g"
   action: string; // concise recovery/action copy kept for API consumers outside the Home card
+  lineItems: LeverLineItem[];
+}
+
+function lineItemsFrom(value: unknown): LeverLineItem[] {
+  let raw: unknown = [];
+  if (Array.isArray(value)) {
+    raw = value;
+  } else if (typeof value === "string") {
+    try {
+      raw = JSON.parse(value) as unknown;
+    } catch {
+      raw = [];
+    }
+  }
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((item) => {
+      if (item === null || typeof item !== "object") return null;
+      const row = item as Record<string, unknown>;
+      const label = typeof row.label === "string" ? row.label : null;
+      const itemValue = typeof row.value === "string" ? row.value : null;
+      const time = typeof row.time === "string" ? row.time : undefined;
+      if (label === null || itemValue === null) return null;
+      const result: LeverLineItem = { label, value: itemValue };
+      if (time !== undefined) result.time = time;
+      return result;
+    })
+    .filter((item): item is LeverLineItem => item !== null);
+}
+
+function signedLineItems(items: LeverLineItem[], prefix: string, sign: "+" | "-"): LeverLineItem[] {
+  return items.map((item) => ({
+    ...item,
+    label: `${prefix}${item.label}`,
+    value: item.value.startsWith("+") || item.value.startsWith("-") ? item.value : `${sign}${item.value}`,
+  }));
 }
 
 /** The bodyweight hero — the recomp scoreboard. */
@@ -503,6 +830,10 @@ function objectiveFor(direction: WeightDirection | null): string {
 
 function formatKg(v: number): string {
   return `${Math.round(v * 10) / 10} kg`;
+}
+
+function formatKcal(value: number): string {
+  return `${Math.round(value).toLocaleString("en-US")} kcal`;
 }
 
 function formatSignedKcal(value: number): string {
@@ -843,6 +1174,7 @@ function dailyLever(
     period: "day",
     detail: `${formatUnit(value)} / ${formatUnit(goal)}`,
     action: actionFor(title, pace, score),
+    lineItems: [],
   };
 }
 
@@ -855,22 +1187,6 @@ function energyBalanceLever(
 ): Lever {
   const roundedValue = Math.round(value);
   const title = "Calorie balance";
-
-  if (burnedEnergy <= 0) {
-    return {
-      key: "energy_balance",
-      title,
-      score: 0,
-      label: "Need burn",
-      status: "attention",
-      value: roundedValue,
-      goal: target.dailyTarget,
-      unit: "kcal",
-      period: "day",
-      detail: `${formatSignedKcal(roundedValue)} today`,
-      action: "Sync total calories burned to calculate today's balance.",
-    };
-  }
 
   if (target.dailyTarget === null) {
     return {
@@ -885,6 +1201,24 @@ function energyBalanceLever(
       period: "day",
       detail: `${formatSignedKcal(roundedValue)} today`,
       action: "Log weight so the calorie target can be derived from body weight.",
+      lineItems: [],
+    };
+  }
+
+  if (burnedEnergy <= 0) {
+    return {
+      key: "energy_balance",
+      title,
+      score: 0,
+      label: "Need burn",
+      status: "attention",
+      value: roundedValue,
+      goal: target.dailyTarget,
+      unit: "kcal",
+      period: "day",
+      detail: `${formatSignedKcal(roundedValue)} today`,
+      action: "Sync active calories and BMR inputs to calculate today's balance.",
+      lineItems: [],
     };
   }
 
@@ -925,6 +1259,7 @@ function energyBalanceLever(
       score >= 85
         ? `Calorie balance is on target for ${directionText}.${intakeNote}`
         : `Aim for ${targetText} today, derived from ${target.basisWeightKg?.toFixed(1) ?? "latest"} kg at 0.5%/week.${intakeNote}`,
+    lineItems: [],
   };
 }
 
@@ -932,7 +1267,7 @@ function actionFor(title: string, pace: number, raw: number): string {
   if (raw >= 100) return `${title} goal met. Keep it steady.`;
   if (pace >= 85) return `${title} is on track. Stay steady.`;
   if (pace >= 55) return `${title} is close. A small push helps.`;
-  return `${title} needs the next clear action.`;
+  return `${title} is behind today.`;
 }
 
 export async function GET(request: NextRequest) {
@@ -950,20 +1285,23 @@ export async function GET(request: NextRequest) {
   let row: Record<string, unknown>;
   let weightRows: Record<string, unknown>[] = [];
   let recoveryRows: Record<string, unknown>[] = [];
+  let detailRow: Record<string, unknown> = {};
   try {
-    const [rows, weights, recoveryHistory] = await Promise.all([
+    const [rows, weights, recoveryHistory, detailRows] = await Promise.all([
       runReadOnlyQuery(homeQuery(targetDate)),
       runReadOnlyQuery(weightSeriesQuery(targetDate)),
       runReadOnlyQuery(recoverySeriesQuery(targetDate)),
+      runReadOnlyQuery(homeDetailRowsQuery(targetDate)),
     ]);
     row = rows[0] ?? {};
     weightRows = weights;
     recoveryRows = recoveryHistory;
+    detailRow = detailRows[0] ?? {};
   } catch (e) {
     return NextResponse.json({ error: `query failed: ${(e as Error).message}` }, { status: 500 });
   }
 
-  const goals = await getGoals();
+  const [goals, profile] = await Promise.all([getGoals(), getUserProfile()]);
 
   const steps = Math.round(num(row.steps_today) ?? 0);
   const protein = Math.round(num(row.protein_today) ?? 0);
@@ -971,11 +1309,11 @@ export async function GET(request: NextRequest) {
   const bodyFat = num(row.body_fat);
   const latestWeight = num(row.latest_weight);
   const intakeEnergy = Math.round(num(row.nutrition_energy_today) ?? 0);
-  const totalEnergy = Math.round(num(row.total_energy_today) ?? 0);
   const activeEnergy = Math.round(num(row.active_energy_today) ?? 0);
-  const latestBmr = num(row.latest_bmr);
-  const estimatedBasalBurn = latestBmr !== null ? latestBmr * dayFrac : 0;
-  const burnedEnergy = totalEnergy > 0 ? totalEnergy : Math.round(activeEnergy + estimatedBasalBurn);
+  const latestBmr = deriveBmrKcalPerDay(latestWeight, bodyFat, targetDate, profile, num(row.latest_bmr)).kcalPerDay;
+  const basalDayFrac = basalDayProgressFraction(isToday, now.minutes);
+  const estimatedBasalBurn = latestBmr !== null ? latestBmr * basalDayFrac : 0;
+  const burnedEnergy = Math.round(activeEnergy + estimatedBasalBurn);
 
   // Weight series arrives newest → oldest; flip to oldest → newest for the sparkline + fit.
   const series = weightRows
@@ -985,14 +1323,23 @@ export async function GET(request: NextRequest) {
 
   const weight = buildWeightHero(series, goals, bodyFat);
   const recovery = buildRecoveryScore(recoveryRows, goals);
+  const proteinItems = lineItemsFrom(detailRow.protein_items);
+  const intakeItems = lineItemsFrom(detailRow.intake_items);
+  const stepItems = lineItemsFrom(detailRow.step_items);
+  const trainingItems = lineItemsFrom(detailRow.training_items);
+  const activeBurnItems = lineItemsFrom(detailRow.active_burn_items);
 
   // --- Levers ---------------------------------------------------------------
-  const protein_lever = dailyLever("protein", "Protein", protein, goals.proteinGramsTarget, "g", dayFrac, (n) =>
-    `${Math.round(n)}g`,
-  );
-  const steps_lever = dailyLever("steps", "Steps", steps, goals.stepsTarget, undefined, dayFrac, (n) =>
-    Math.round(n).toLocaleString("en-US"),
-  );
+  const protein_lever: Lever = {
+    ...dailyLever("protein", "Protein", protein, goals.proteinGramsTarget, "g", dayFrac, (n) => `${Math.round(n)}g`),
+    lineItems: proteinItems,
+  };
+  const steps_lever: Lever = {
+    ...dailyLever("steps", "Steps", steps, goals.stepsTarget, undefined, dayFrac, (n) =>
+      Math.round(n).toLocaleString("en-US"),
+    ),
+    lineItems: stepItems,
+  };
 
   // Training: a weekly count, always judged against the full week (no intra-week pacing).
   const trainScore = scoreFromGoal(trainingSessions, goals.weeklyWorkoutTarget);
@@ -1019,14 +1366,26 @@ export async function GET(request: NextRequest) {
       trainScore >= 100
         ? "Weekly training target hit. Muscle-retention signal is strong."
         : "Get a lifting session in — it's what makes the calorie target work for body composition.",
+    lineItems: [
+      ...(trainingItems.length > 0 ? trainingItems : [{ label: "Qualifying sessions", value: "None logged" }]),
+    ],
   };
 
-  // Calorie balance: intake - total burn. The target is derived from the latest bodyweight at 0.5%
+  // Calorie balance: intake - estimated daily expenditure (active burn + basal burn). Raw
+  // TotalCaloriesBurnedRecord rows are interval records and are not treated as full-day burn.
+  // The target is derived from the latest bodyweight at 0.5%
   // body weight per week, with sign chosen by goal weight direction (deficit / surplus / maintenance).
   const balanceTarget = calorieTargetFromWeight(latestWeight, goals);
-  const energy_lever = energyBalanceLever(intakeEnergy - burnedEnergy, balanceTarget, intakeEnergy, burnedEnergy, dayFrac);
+  const energy_lever: Lever = {
+    ...energyBalanceLever(intakeEnergy - burnedEnergy, balanceTarget, intakeEnergy, burnedEnergy, dayFrac),
+    lineItems: [
+      ...signedLineItems(intakeItems, "Food · ", "+"),
+      ...signedLineItems(activeBurnItems, "Burn · ", "-"),
+      { label: "Basal estimate", value: formatSignedKcal(-estimatedBasalBurn) },
+    ],
+  };
 
-  const levers = [protein_lever, training_lever, steps_lever, energy_lever];
+  const levers: Lever[] = [protein_lever, training_lever, steps_lever, energy_lever];
 
   // Overall "recomp" score: the weight trend is the objective, so it carries the most weight; the
   // levers are how you steer it. 55% weight / 45% split across the four levers.

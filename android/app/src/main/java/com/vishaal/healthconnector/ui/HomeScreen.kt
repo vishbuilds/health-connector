@@ -47,6 +47,7 @@ import com.vishaal.healthconnector.logic.copyLogPrompt
 import com.vishaal.healthconnector.logic.openClaude
 import com.vishaal.healthconnector.network.HomeApi
 import com.vishaal.healthconnector.network.HomeLever
+import com.vishaal.healthconnector.network.HomeLeverLineItem
 import com.vishaal.healthconnector.network.HomeRecoveryMetric
 import com.vishaal.healthconnector.network.HomeRecoveryScore
 import com.vishaal.healthconnector.network.HomeResult
@@ -255,6 +256,17 @@ private fun HomeLoaded(
     notice: String? = null,
     onLogWithClaude: (String) -> Unit = {},
 ) {
+    var selectedLeverKey by remember(summary.date) { mutableStateOf<String?>(null) }
+    val selectedLever = summary.levers.firstOrNull { it.key == selectedLeverKey }
+
+    if (selectedLever != null) {
+        LeverDetailPage(
+            lever = selectedLever,
+            onBack = { selectedLeverKey = null },
+        )
+        return
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -268,7 +280,12 @@ private fun HomeLoaded(
             summary.levers.chunked(2).forEach { rowLevers ->
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     rowLevers.forEach { lever ->
-                        LeverTile(lever = lever, modifier = Modifier.weight(1f))
+                        LeverTile(
+                            lever = lever,
+                            selected = false,
+                            onClick = { selectedLeverKey = lever.key },
+                            modifier = Modifier.weight(1f),
+                        )
                     }
                     if (rowLevers.size == 1) Spacer(modifier = Modifier.weight(1f))
                 }
@@ -369,6 +386,8 @@ private fun WeightHeroCard(
 @Composable
 private fun LeverTile(
     lever: HomeLever,
+    selected: Boolean,
+    onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val animatedProgress by animateFloatAsState(
@@ -380,8 +399,11 @@ private fun LeverTile(
     val (big, sub) = leverDisplay(lever)
 
     AppCard(
-        modifier = modifier.aspectRatio(1.12f),
+        modifier = modifier
+            .aspectRatio(1.12f)
+            .clickable(onClick = onClick),
         background = HealthTheme.colors.surface,
+        border = if (selected) statusColor else HealthTheme.colors.border,
     ) {
         Column(
             modifier = Modifier.fillMaxSize(),
@@ -402,6 +424,11 @@ private fun LeverTile(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
+                AppIcon(
+                    icon = AppIconKind.CHEVRON,
+                    tint = if (selected) statusColor else HealthTheme.colors.muted,
+                    modifier = Modifier.size(16.dp),
+                )
             }
 
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -414,6 +441,164 @@ private fun LeverTile(
             }
 
             ProgressBar(progress = animatedProgress, color = statusColor)
+        }
+    }
+}
+
+@Composable
+private fun LeverDetailPage(
+    lever: HomeLever,
+    onBack: () -> Unit,
+) {
+    val statusColor = colorForStatus(lever.status)
+    val lineItems = lever.lineItems.ifEmpty { fallbackLineItems(lever) }
+    val (big, sub) = leverDisplay(lever)
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(
+                icon = AppIconKind.BACK,
+                onClick = onBack,
+                ghost = true,
+                contentDescription = "Back to daily view",
+            )
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(start = 8.dp),
+            ) {
+                AppText(text = lever.title, style = HealthTheme.type.title, maxLines = 1)
+                AppText(
+                    text = leverPeriodLabel(lever),
+                    style = HealthTheme.type.small,
+                    color = HealthTheme.colors.muted,
+                    maxLines = 1,
+                )
+            }
+            AppText(text = lever.label, style = HealthTheme.type.label, color = statusColor, maxLines = 1)
+        }
+
+        AppCard(modifier = Modifier.fillMaxWidth(), background = HealthTheme.colors.surface) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    AppIcon(
+                        icon = iconForLever(lever.key),
+                        tint = statusColor,
+                        modifier = Modifier
+                            .padding(end = 8.dp)
+                            .size(22.dp),
+                    )
+                    AppText(text = big, style = HealthTheme.type.display, modifier = Modifier.weight(1f))
+                    AppText(
+                        text = sub,
+                        style = HealthTheme.type.small,
+                        color = HealthTheme.colors.muted,
+                        textAlign = TextAlign.End,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    AppText(
+                        text = "Progress",
+                        style = HealthTheme.type.label,
+                        color = HealthTheme.colors.muted,
+                        modifier = Modifier.weight(1f),
+                    )
+                    AppText(
+                        text = "${lever.score.coerceIn(0, 100)}%",
+                        style = HealthTheme.type.label,
+                        color = statusColor,
+                        maxLines = 1,
+                    )
+                }
+                ProgressBar(
+                    progress = lever.score.coerceIn(0, 100) / 100f,
+                    color = statusColor,
+                )
+            }
+        }
+
+        AppCard(
+            modifier = Modifier.fillMaxWidth(),
+            background = HealthTheme.colors.surface,
+            border = HealthTheme.colors.border,
+        ) {
+            val groupedLineItems = groupLineItemsByTime(lineItems)
+            val showTimeColumn = groupedLineItems.any { !it.time.isNullOrBlank() }
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                groupedLineItems.forEach { group ->
+                    LeverLineItemGroupRows(group = group, showTimeColumn = showTimeColumn)
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
+    }
+}
+
+@Composable
+private fun LeverLineItemGroupRows(
+    group: LineItemTimeGroup,
+    showTimeColumn: Boolean,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        if (showTimeColumn) {
+            AppText(
+                text = group.time ?: "",
+                style = HealthTheme.type.small,
+                color = HealthTheme.colors.muted,
+                modifier = Modifier.width(80.dp),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            group.items.forEach { item ->
+                LeverLineItemRow(item = item)
+            }
+        }
+    }
+}
+
+@Composable
+private fun LeverLineItemRow(
+    item: HomeLeverLineItem,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            AppText(
+                text = item.label,
+                style = HealthTheme.type.body,
+                color = HealthTheme.colors.ink,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            AppText(
+                text = item.value,
+                style = HealthTheme.type.small,
+                color = HealthTheme.colors.muted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }
@@ -850,6 +1035,47 @@ private fun leverDisplay(lever: HomeLever): Pair<String, String> {
     }
 }
 
+private fun fallbackLineItems(lever: HomeLever): List<HomeLeverLineItem> {
+    val (big, sub) = leverDisplay(lever)
+    return listOf(
+        HomeLeverLineItem("Current", big),
+        HomeLeverLineItem("Goal", sub),
+    )
+}
+
+private data class LineItemTimeGroup(
+    val time: String?,
+    val items: List<HomeLeverLineItem>,
+)
+
+private fun groupLineItemsByTime(items: List<HomeLeverLineItem>): List<LineItemTimeGroup> {
+    val groups = mutableListOf<LineItemTimeGroup>()
+    val timeIndexes = mutableMapOf<String, Int>()
+
+    items.forEach { item ->
+        val time = item.time?.takeIf { it.isNotBlank() }
+        if (time == null) {
+            groups += LineItemTimeGroup(time = null, items = listOf(item))
+        } else {
+            val existingIndex = timeIndexes[time]
+            if (existingIndex == null) {
+                timeIndexes[time] = groups.size
+                groups += LineItemTimeGroup(time = time, items = listOf(item))
+            } else {
+                val group = groups[existingIndex]
+                groups[existingIndex] = group.copy(items = group.items + item)
+            }
+        }
+    }
+
+    return groups
+}
+
+private fun leverPeriodLabel(lever: HomeLever): String = when (lever.period) {
+    "week" -> "This week"
+    else -> "Daily view"
+}
+
 private fun grouped(n: Int): String = String.format(Locale.US, "%,d", n)
 
 private fun signedKcal(n: Int): String = when {
@@ -977,8 +1203,33 @@ private fun sampleLever(
     unit = unit,
     period = period,
     detail = "",
-    action = "$title needs the next clear action.",
+    action = "",
+    lineItems = sampleLeverLineItems(key),
 )
+
+private fun sampleLeverLineItems(key: String): List<HomeLeverLineItem> {
+    return when (key) {
+        "protein" -> listOf(
+            HomeLeverLineItem("Protein porridge w/ milk", "17.3g · 278 kcal", "08:00"),
+            HomeLeverLineItem("Small low-fat cappuccino", "6.4g · 60 kcal", "08:00"),
+            HomeLeverLineItem("Banana", "1.7g · 107 kcal", "08:00"),
+        )
+        "training" -> listOf(
+            HomeLeverLineItem("Jul 05 · 1 Upper", "35 min · Hevy", "14:23"),
+        )
+        "steps" -> listOf(
+            HomeLeverLineItem("Oura steps", "1,547 steps", "00:00"),
+        )
+        "energy_balance" -> listOf(
+            HomeLeverLineItem("Food · Protein porridge w/ milk", "+278 kcal · 17.3g protein", "08:00"),
+            HomeLeverLineItem("Food · Small low-fat cappuccino", "+60 kcal · 6.4g protein", "08:00"),
+            HomeLeverLineItem("Food · Banana", "+107 kcal · 1.7g protein", "08:00"),
+            HomeLeverLineItem("Burn · Oura active burn", "-120 kcal", "04:00"),
+            HomeLeverLineItem("Basal estimate", "-840 kcal"),
+        )
+        else -> emptyList()
+    }
+}
 
 private fun sampleLevers(training: Int = 2): List<HomeLever> = listOf(
     sampleLever("protein", "Protein", 88, "On track", "optimal", 132.0, 150.0, "g"),
@@ -1097,6 +1348,50 @@ private fun HomeDarkPreview() {
                 levers = sampleLevers(training = 3),
                 insights = listOf("On pace — losing 0.4 kg/wk, 4.3 kg to goal"),
             ),
+        )
+    }
+}
+
+@Preview(name = "Lever page — protein", showBackground = true, heightDp = 700, widthDp = 400)
+@Composable
+private fun ProteinLeverPagePreview() {
+    PreviewShell(ThemeMode.LIGHT) {
+        LeverDetailPage(
+            lever = sampleLevers(training = 3).first { it.key == "protein" },
+            onBack = {},
+        )
+    }
+}
+
+@Preview(name = "Lever page — training", showBackground = true, heightDp = 700, widthDp = 400)
+@Composable
+private fun TrainingLeverPagePreview() {
+    PreviewShell(ThemeMode.LIGHT) {
+        LeverDetailPage(
+            lever = sampleLevers(training = 3).first { it.key == "training" },
+            onBack = {},
+        )
+    }
+}
+
+@Preview(name = "Lever page — steps", showBackground = true, heightDp = 700, widthDp = 400)
+@Composable
+private fun StepsLeverPagePreview() {
+    PreviewShell(ThemeMode.LIGHT) {
+        LeverDetailPage(
+            lever = sampleLevers(training = 3).first { it.key == "steps" },
+            onBack = {},
+        )
+    }
+}
+
+@Preview(name = "Lever page — calorie balance", showBackground = true, heightDp = 700, widthDp = 400)
+@Composable
+private fun CalorieBalanceLeverPagePreview() {
+    PreviewShell(ThemeMode.LIGHT) {
+        LeverDetailPage(
+            lever = sampleLevers(training = 3).first { it.key == "energy_balance" },
+            onBack = {},
         )
     }
 }
