@@ -10,6 +10,8 @@ android {
     // connect-client:1.1.0 requires consumers to compile against API 36+.
     compileSdk = 36
 
+    val ciDebugKeystore = layout.projectDirectory.file("ci-debug-keystore.p12").asFile
+
     defaultConfig {
         applicationId = "com.vishaal.healthconnector"
         minSdk = 26
@@ -18,6 +20,16 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        create("ciDebug") {
+            storeFile = ciDebugKeystore
+            storePassword = "healthconnector"
+            keyAlias = "healthconnectordebug"
+            keyPassword = "healthconnector"
+            storeType = "pkcs12"
+        }
     }
 
     buildTypes {
@@ -30,6 +42,9 @@ android {
         }
         debug {
             isMinifyEnabled = false
+            if (ciDebugKeystore.exists()) {
+                signingConfig = signingConfigs.getByName("ciDebug")
+            }
         }
     }
 
