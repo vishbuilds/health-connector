@@ -2,7 +2,6 @@ package com.vishaal.healthconnector.sync
 
 import android.content.Context
 import android.util.Log
-import androidx.health.connect.client.changes.ChangesTokenExpiredException
 import androidx.health.connect.client.changes.DeletionChange
 import androidx.health.connect.client.changes.UpsertionChange
 import androidx.health.connect.client.permission.HealthPermission
@@ -31,6 +30,13 @@ import kotlinx.serialization.json.JsonObject
  * that type (via [BackfillWorker.KEY_RECORD_TYPE_WIRE_NAME]) so it re-syncs from scratch and
  * re-establishes a fresh token, rather than failing the whole periodic sync.
  */
+/**
+ * connect-client 1.1.0 has no ChangesTokenExpiredException; getChanges signals expiry via
+ * [androidx.health.connect.client.response.ChangesResponse.changesTokenExpired]. This local
+ * exception lets [SyncWorker.syncOneType] surface that to the per-type handler in doWork.
+ */
+private class ChangesTokenExpiredException : Exception()
+
 class SyncWorker(
     context: Context,
     params: WorkerParameters,
@@ -93,6 +99,7 @@ class SyncWorker(
 
         do {
             val response = client.getChanges(currentToken)
+            if (response.changesTokenExpired) throw ChangesTokenExpiredException()
             for (change in response.changes) {
                 when (change) {
                     is UpsertionChange -> upserts.add(change.record.toUpsertJson())

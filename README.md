@@ -1,6 +1,6 @@
 # health-connector
 
-Exposes Android [Health Connect](https://developer.android.com/health-and-fitness/health-connect) data (steps, sleep, heart rate, exercise, nutrition, cycle tracking, body measurements, vitals — every record type Health Connect stores) to Claude as a read-only [MCP](https://modelcontextprotocol.io) Custom Connector, from any Claude client (web, mobile, desktop).
+Exposes Android [Health Connect](https://developer.android.com/health-and-fitness/health-connect) data (steps, sleep, heart rate, exercise, nutrition, cycle tracking, body measurements, vitals — every record type Health Connect stores) to Claude as an [MCP](https://modelcontextprotocol.io) Custom Connector, from any Claude client (web, mobile, desktop). Reads cover every record type; a small, deliberately curated subset can also be **written** back (see [Writing data](#writing-data)).
 
 Health Connect has no cloud API — data only exists on the phone. This project bridges it: an Android app reads Health Connect data and syncs it to a small backend, which also serves the MCP endpoint Claude connects to.
 
@@ -25,7 +25,7 @@ phone (Health Connect) -> android/ app -> HTTPS POST -> server/ (/api/ingest) ->
    - `BETTER_AUTH_SECRET` — random secret (`openssl rand -base64 32`).
    - `BETTER_AUTH_URL` — the deployed URL (e.g. `https://health-connector.vercel.app`), or `http://localhost:3000` for local dev.
    - `OWNER_EMAIL` — the only email allowed to sign in.
-3. **Push the schema**: `cd server && npm install && npm run db:push`.
+3. **Push the schema**: `cd server && npm install && npm run db:push`. (Re-run this after pulling the write-support change — it adds the `pending_writes` table.)
 4. **Seed the one allowed account** (there's no public sign-up route by design): `OWNER_PASSWORD=<your password> npm run auth:seed-user`.
 5. **Deploy** to Vercel, rooted at `server/`. `vercel.json` pins functions to `syd1` (Sydney).
 6. If you ever change `server/lib/auth.ts`'s plugin config, regenerate the auth schema with `npm run auth:generate-schema` and re-run `db:push`.
@@ -56,11 +56,40 @@ To build/run from Android Studio instead: open `android/`, let Gradle sync (it w
 
 ## Connecting Claude
 
-In Claude, add a Custom Connector pointing at `https://<your-deployment>.vercel.app/api/mcp`. Claude will redirect you to sign in with the owner account seeded above; after that one-time login, Claude can call:
+In Claude, add a Custom Connector pointing at `https://<your-deployment>.vercel.app/api/mcp`. Claude will redirect you to sign in with the owner account seeded above; after that one-time login, Claude has a small, general surface.
 
-- `list_data_types` — every record type synced so far, with counts and date ranges.
-- `get_records` — raw records of one type within a date range (Australia/Sydney calendar dates).
-- `get_latest` — the most recent record of a given type.
-- `get_daily_summary` — steps, distance, calories, floors, hydration, sleep duration, resting heart rate, exercise sessions, and latest weight for one Sydney-local calendar day.
+**Tools**
 
-All tools are read-only.
+- `query_health_data` — run a single read-only SQL query (`SELECT` / `WITH`) over the `health_records` and `pending_writes` tables and get rows back as JSON. This is the one read primitive: raw records, "latest of a type", daily/weekly aggregates, cross-type joins, and write-queue status are all just queries. It runs inside a `READ ONLY` transaction with a statement timeout, so writes are impossible and runaway scans are bounded.
+- `write_records` — queue one or more records to be written into Health Connect on the phone.
+
+**Resources** (read-only reference context Claude can pull in as needed)
+
+- `health://record-types` — every record type this connector knows, its category, live counts, and date range.
+- `health://data-shapes` — the jsonb `data` field names/units per record type (for writing `data->>'field'` SQL).
+- `health://writable-types` — the types `write_records` accepts, with fields, units, sensible ranges, and whether `endTime` is required.
+
+**Prompts** (canned analyses that drive `query_health_data`)
+
+- `daily_summary`, `weekly_summary`, `sleep_vs_activity`.
+
+## Writing data
+
+Health Connect only exists on the phone, and the phone is only reachable via its own outbound polling, so writes use a queued reverse channel rather than a direct call:
+
+```
+Claude --(write_records, MCP/OAuth)--> server: INSERT pending_writes (status=pending)
+phone --(GET /api/writes, INGEST_SECRET)--> drains queue -> HealthConnectClient.insertRecords
+phone --(POST /api/writes/ack)--> server marks applied/failed
+```
+
+A queued write is applied on the phone's **next sync** (within ~15 minutes, or immediately via "Sync now"), after which it flows back through the normal read sync and shows up in `query_health_data`. Querying the `pending_writes` table shows where each request is in that lifecycle.
+
+Security model:
+
+- **Owner-only.** `write_records` is reachable only through the MCP OAuth session, i.e. the single seeded owner account — the same gate as reads.
+- **Strict type allowlist.** Only the record types in `server/lib/write-types.ts` (mirrored in `android/.../WritableRecordTypes.kt`) can ever be written; every other type is read-only. The current set is weight, height, body fat, body temperature, blood pressure, blood glucose, oxygen saturation, resting heart rate, respiratory rate, hydration, steps, and nutrition. This capability gate is enforced by the tool's input schema.
+- **Value guidance, phone-enforced.** Per-field units and sensible ranges (and the "interval types need `endTime`" rule) are surfaced to Claude via `health://writable-types` rather than enforced server-side. The phone's Health Connect insert is the real validator: anything it rejects comes back as a `failed` row via `/api/writes/ack`, visible through `query_health_data`. (Add a server-side rail here only if a real bad write actually occurs.)
+- **Idempotent.** Each queued write's server id is used as the Health Connect `clientRecordId`, so a redelivered write updates the same record instead of duplicating it.
+- **Device auth.** `/api/writes` and `/api/writes/ack` require the same timing-safe `INGEST_SECRET` bearer as `/api/ingest`.
+- **Revocable on-device.** Write access is per-type in Health Connect; declining a WRITE permission on the Permissions screen disables writing that type without affecting reads. Records written by this app are attributed to it (manual entry) and can be deleted from Health Connect like any other source.

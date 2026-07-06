@@ -5,16 +5,15 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.navigation.NavDestination.Companion.hierarchy
@@ -23,33 +22,34 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.vishaal.healthconnector.data.SettingsStore
 import com.vishaal.healthconnector.sync.WorkScheduler
-import com.vishaal.healthconnector.ui.PermissionsScreen
-import com.vishaal.healthconnector.ui.SettingsScreen
-import com.vishaal.healthconnector.ui.StatusScreen
+import com.vishaal.healthconnector.ui.HomeScreen
+import com.vishaal.healthconnector.ui.SetupScreen
+import com.vishaal.healthconnector.ui.theme.HealthConnectorTheme
+import com.vishaal.healthconnector.ui.theme.ThemeMode
 
 private sealed class Destination(val route: String, val label: String) {
-    object Permissions : Destination("permissions", "Permissions")
-    object Status : Destination("status", "Status")
-    object Settings : Destination("settings", "Settings")
+    object Home : Destination("home", "Home")
+    object Setup : Destination("setup", "Setup")
 
     companion object {
-        val all = listOf(Permissions, Status, Settings)
+        val all = listOf(Home, Setup)
     }
 }
 
 /**
- * Single launcher activity. Hosts a 3-tab Compose navigation graph:
- * Permissions -> Status -> Settings. When [PermissionsScreen] reports that every required
- * Health Connect permission is granted, this enqueues both sync workers
- * ([WorkScheduler.enqueueAll]) via [WorkScheduler.enqueueUniqueWork] semantics so re-entering
- * the permissions screen never double-enqueues them.
+ * Single launcher activity. Hosts Home plus Setup. Setup keeps the existing permissions/status/
+ * settings surfaces together; when the permissions screen reports that every required Health
+ * Connect permission is granted, this enqueues the sync workers through [WorkScheduler.enqueueAll].
  */
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        SettingsStore(this)
         setContent {
-            MaterialTheme {
+            val storedThemeMode by SettingsStore.themeModeFlow.collectAsState()
+            HealthConnectorTheme(themeMode = ThemeMode.fromStored(storedThemeMode)) {
                 Surface {
                     HealthConnectorApp()
                 }
@@ -84,9 +84,8 @@ private fun HealthConnectorApp() {
                         },
                         icon = {
                             val icon = when (destination) {
-                                Destination.Permissions -> Icons.Filled.Lock
-                                Destination.Status -> Icons.Filled.CheckCircle
-                                Destination.Settings -> Icons.Filled.Settings
+                                Destination.Home -> Icons.Filled.Home
+                                Destination.Setup -> Icons.Filled.Settings
                             }
                             Icon(icon, contentDescription = destination.label)
                         },
@@ -98,21 +97,18 @@ private fun HealthConnectorApp() {
     ) { innerPadding ->
         NavHost(
             navController = navController,
-            startDestination = Destination.Permissions.route,
+            startDestination = Destination.Home.route,
             modifier = Modifier.padding(innerPadding),
         ) {
-            composable(Destination.Permissions.route) {
-                PermissionsScreen(
+            composable(Destination.Home.route) {
+                HomeScreen()
+            }
+            composable(Destination.Setup.route) {
+                SetupScreen(
                     onAllPermissionsGranted = {
                         WorkScheduler.enqueueAll(context)
                     },
                 )
-            }
-            composable(Destination.Status.route) {
-                StatusScreen()
-            }
-            composable(Destination.Settings.route) {
-                SettingsScreen()
             }
         }
     }

@@ -20,8 +20,6 @@ import androidx.health.connect.client.records.HeartRateVariabilityRmssdRecord
 import androidx.health.connect.client.records.HeightRecord
 import androidx.health.connect.client.records.HydrationRecord
 import androidx.health.connect.client.records.IntermenstrualBleedingRecord
-import androidx.health.connect.client.records.InstantaneousRecord
-import androidx.health.connect.client.records.IntervalRecord
 import androidx.health.connect.client.records.LeanBodyMassRecord
 import androidx.health.connect.client.records.MenstruationFlowRecord
 import androidx.health.connect.client.records.MenstruationPeriodRecord
@@ -41,6 +39,8 @@ import androidx.health.connect.client.records.TotalCaloriesBurnedRecord
 import androidx.health.connect.client.records.Vo2MaxRecord
 import androidx.health.connect.client.records.WeightRecord
 import androidx.health.connect.client.records.WheelchairPushesRecord
+import java.time.Instant
+import java.time.ZoneOffset
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
@@ -81,20 +81,13 @@ import kotlinx.serialization.json.put
  */
 fun Record.toUpsertJson(): JsonObject {
     val metadata = this.metadata
-    val startTime = when (this) {
-        is InstantaneousRecord -> this.time
-        is IntervalRecord -> this.startTime
-        else -> null
-    }
-    val endTime = when (this) {
-        is IntervalRecord -> this.endTime
-        else -> null
-    }
-    val zoneOffset = when (this) {
-        is InstantaneousRecord -> this.zoneOffset
-        is IntervalRecord -> this.startZoneOffset
-        else -> null
-    }
+    // InstantaneousRecord / IntervalRecord are internal in connect-client 1.1.0, so the
+    // shared time fields can't be read through them. Instantaneous records expose
+    // time/zoneOffset; interval records expose startTime/endTime/startZoneOffset. Read
+    // whichever getters the concrete record class actually has.
+    val startTime = readInstant("getTime") ?: readInstant("getStartTime")
+    val endTime = readInstant("getEndTime")
+    val zoneOffset = readZoneOffset("getZoneOffset") ?: readZoneOffset("getStartZoneOffset")
 
     return buildJsonObject {
         put("id", metadata.id)
@@ -106,6 +99,18 @@ fun Record.toUpsertJson(): JsonObject {
         put("data", buildDataJson(this@toUpsertJson))
     }
 }
+
+/**
+ * InstantaneousRecord / IntervalRecord are internal in connect-client, so the shared
+ * time fields are read reflectively off the concrete record class's public getters
+ * (getTime/getZoneOffset for instantaneous, getStartTime/getEndTime/getStartZoneOffset
+ * for interval). The debug build isn't minified, so the getters are always present.
+ */
+private fun Record.readInstant(getter: String): Instant? =
+    runCatching { javaClass.getMethod(getter).invoke(this) as? Instant }.getOrNull()
+
+private fun Record.readZoneOffset(getter: String): ZoneOffset? =
+    runCatching { javaClass.getMethod(getter).invoke(this) as? ZoneOffset }.getOrNull()
 
 private fun buildDataJson(record: Record): JsonObject =
     seriesDataFields(record)
@@ -135,7 +140,7 @@ private fun instantaneousDataFields(record: Record): JsonObject? = when (record)
         put("basalMetabolicRateWatts", record.basalMetabolicRate.inWatts)
     }
     is BodyWaterMassRecord -> buildJsonObject {
-        put("bodyWaterMassKg", record.bodyWaterMass.inKilograms)
+        put("bodyWaterMassKg", record.mass.inKilograms)
     }
     is BoneMassRecord -> buildJsonObject {
         put("boneMassKg", record.mass.inKilograms)

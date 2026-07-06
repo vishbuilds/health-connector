@@ -1,27 +1,12 @@
-import { timingSafeEqual } from "crypto";
 import { inArray, sql } from "drizzle-orm";
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db/client";
 import { healthRecords, ingestLog } from "@/db/schema";
 import { ingestRequestSchema } from "@/lib/ingest-schema";
-
-function isAuthorized(request: NextRequest): boolean {
-  const secret = process.env.INGEST_SECRET;
-  if (!secret) return false;
-
-  const header = request.headers.get("authorization") ?? "";
-  const prefix = "Bearer ";
-  if (!header.startsWith(prefix)) return false;
-  const token = header.slice(prefix.length);
-
-  const tokenBuf = Buffer.from(token);
-  const secretBuf = Buffer.from(secret);
-  if (tokenBuf.length !== secretBuf.length) return false;
-  return timingSafeEqual(tokenBuf, secretBuf);
-}
+import { isDeviceAuthorized } from "@/lib/device-auth";
 
 export async function POST(request: NextRequest) {
-  if (!isAuthorized(request)) {
+  if (!isDeviceAuthorized(request)) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
