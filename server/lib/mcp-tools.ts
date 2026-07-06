@@ -289,8 +289,8 @@ function registerFoodMacrosTool(server: McpServer) {
 }
 
 // ---------------------------------------------------------------------------
-// Goals: the user's daily targets (steps / sleep / hydration / active calories).
-// Readable as a resource and writable via a tool. Single-owner by construction —
+// Goals: the user's daily targets and bodyweight objective.
+// Readable as a tool/resource and writable via a tool. Single-owner by construction —
 // the write path is gated by the owner's MCP OAuth session, same as write_records.
 // Backs the app's Home screen progress rings via GET /api/home.
 // ---------------------------------------------------------------------------
@@ -302,8 +302,10 @@ function registerGoals(server: McpServer) {
     {
       title: "Daily health goals",
       description:
-        "The user's current daily targets: steps, sleep (minutes), hydration (liters), and active " +
-        "calories. These drive the progress rings on the app's Home screen. Update them with set_goals.",
+        "The user's current targets. Daily: steps, sleep (minutes), hydration (liters), protein " +
+        "(grams). Weekly: workout sessions. Directional: target bodyweight (kg, or null if none). " +
+        "The Home screen derives calorie deficit/surplus from latest bodyweight at 0.5%/week. " +
+        "Update goals with set_goals.",
       mimeType: "application/json",
     },
     async (uri) => {
@@ -313,27 +315,63 @@ function registerGoals(server: McpServer) {
   );
 
   server.registerTool(
+    "get_goals",
+    {
+      title: "Get current health goals",
+      description:
+        "Read the user's current targets that power the Home screen. Daily: steps, sleep " +
+        "(minutes), hydration (liters), protein (grams). Weekly: workout sessions. Directional: " +
+        "target bodyweight (kg, or null if none). Calorie balance is derived from latest bodyweight " +
+        "at 0.5%/week rather than manually targeted. Use this before " +
+        "answering questions about current targets or before changing them with set_goals.",
+      inputSchema: {},
+    },
+    async () => {
+      const goals = await getGoals();
+      return {
+        content: [{ type: "text", text: JSON.stringify({ goals }, null, 2) }],
+      };
+    },
+  );
+
+  server.registerTool(
     "set_goals",
     {
       title: "Set daily health goals",
       description:
-        "Update the user's daily targets that power the Home screen progress rings. Every field is " +
-        "optional — pass only the ones you want to change; the rest keep their current value. Sleep is " +
-        "in MINUTES (e.g. 480 = 8 hours), hydration in LITERS, steps and active calories are counts. " +
-        "Read the current values from the health://goals resource first.",
+        "Update the user's targets that power the Home screen. Every field is optional — pass only " +
+        "the ones you want to change; the rest keep their current value. Sleep is in MINUTES (e.g. " +
+        "480 = 8h), hydration in LITERS, protein in GRAMS/day, steps are daily counts, " +
+        "weeklyWorkoutTarget is sessions/week, weightTargetKg is the target bodyweight in KG " +
+        "(pass 0 to clear it). The Home calorie-balance target is derived from latest bodyweight at " +
+        "0.5%/week: deficit when above target, surplus when below target, maintenance at target. A " +
+        "good protein target for muscle retention in a deficit is ~1.8 g per kg of bodyweight. Read " +
+        "current values with get_goals first.",
       inputSchema: {
         stepsTarget: z.number().int().positive().optional().describe("Daily step goal, e.g. 10000."),
         sleepMinutesTarget: z.number().int().positive().optional().describe("Daily sleep goal in MINUTES, e.g. 480 for 8h."),
         hydrationLitersTarget: z.number().positive().optional().describe("Daily hydration goal in LITERS, e.g. 2.5."),
-        activeCaloriesTarget: z.number().int().positive().optional().describe("Daily active-calories goal, e.g. 500."),
+        proteinGramsTarget: z.number().int().positive().optional().describe("Daily protein goal in GRAMS, e.g. 150."),
+        weeklyWorkoutTarget: z.number().int().positive().optional().describe("Target workout sessions per week, e.g. 4."),
+        weightTargetKg: z
+          .number()
+          .min(0)
+          .optional()
+          .describe("Target bodyweight in KG. Pass 0 to clear the target."),
       },
     },
     async (updates) => {
+      // weightTargetKg is stored as a nullable numeric; 0 is the sentinel for "clear the target".
+      const weightTarget =
+        updates.weightTargetKg === undefined ? undefined : updates.weightTargetKg === 0 ? null : String(updates.weightTargetKg);
+
       const set: Record<string, unknown> = { updatedAt: new Date() };
       if (updates.stepsTarget !== undefined) set.stepsTarget = updates.stepsTarget;
       if (updates.sleepMinutesTarget !== undefined) set.sleepMinutesTarget = updates.sleepMinutesTarget;
       if (updates.hydrationLitersTarget !== undefined) set.hydrationLitersTarget = String(updates.hydrationLitersTarget);
-      if (updates.activeCaloriesTarget !== undefined) set.activeCaloriesTarget = updates.activeCaloriesTarget;
+      if (updates.proteinGramsTarget !== undefined) set.proteinGramsTarget = updates.proteinGramsTarget;
+      if (updates.weeklyWorkoutTarget !== undefined) set.weeklyWorkoutTarget = updates.weeklyWorkoutTarget;
+      if (weightTarget !== undefined) set.weightTargetKg = weightTarget;
 
       await db
         .insert(userGoals)
@@ -344,7 +382,9 @@ function registerGoals(server: McpServer) {
           ...(updates.hydrationLitersTarget !== undefined
             ? { hydrationLitersTarget: String(updates.hydrationLitersTarget) }
             : {}),
-          ...(updates.activeCaloriesTarget !== undefined ? { activeCaloriesTarget: updates.activeCaloriesTarget } : {}),
+          ...(updates.proteinGramsTarget !== undefined ? { proteinGramsTarget: updates.proteinGramsTarget } : {}),
+          ...(updates.weeklyWorkoutTarget !== undefined ? { weeklyWorkoutTarget: updates.weeklyWorkoutTarget } : {}),
+          ...(weightTarget !== undefined ? { weightTargetKg: weightTarget } : {}),
         })
         .onConflictDoUpdate({ target: userGoals.id, set });
 

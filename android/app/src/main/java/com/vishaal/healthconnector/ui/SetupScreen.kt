@@ -1,90 +1,100 @@
 package com.vishaal.healthconnector.ui
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.vishaal.healthconnector.data.SettingsStore
+import com.vishaal.healthconnector.ui.theme.AppText
+import com.vishaal.healthconnector.ui.theme.HealthTheme
+import com.vishaal.healthconnector.ui.theme.IconButton
+import com.vishaal.healthconnector.ui.theme.AppIconKind
+import com.vishaal.healthconnector.ui.theme.SegmentedControl
 import com.vishaal.healthconnector.ui.theme.ThemeMode
 
 private enum class SetupTab(val label: String) {
-    PERMISSIONS("Permissions"),
     STATUS("Status"),
-    SETTINGS("Settings"),
+    PERMISSIONS("Access"),
+    SETTINGS("Backend"),
+    APPEARANCE("Look"),
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SetupScreen(onAllPermissionsGranted: () -> Unit) {
-    val context = LocalContext.current
-    val settingsStore = remember { SettingsStore(context) }
-    val storedThemeMode by SettingsStore.themeModeFlow.collectAsState()
-    val selectedThemeMode = ThemeMode.fromStored(storedThemeMode)
+fun SetupScreen(
+    onBack: () -> Unit,
+    onAllPermissionsGranted: () -> Unit,
+) {
     var selectedTab by remember { mutableIntStateOf(0) }
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-        ) {
-            Text(
-                text = "Appearance",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 18.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(
+                icon = AppIconKind.BACK,
+                onClick = onBack,
+                contentDescription = "Back",
             )
-            SingleChoiceSegmentedButtonRow(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 8.dp),
-            ) {
-                ThemeMode.entries.forEachIndexed { index, mode ->
-                    SegmentedButton(
-                        selected = selectedThemeMode == mode,
-                        onClick = { settingsStore.themeMode = mode.name },
-                        shape = SegmentedButtonDefaults.itemShape(
-                            index = index,
-                            count = ThemeMode.entries.size,
-                        ),
-                    ) {
-                        Text(mode.label())
-                    }
-                }
-            }
-        }
-
-        TabRow(selectedTabIndex = selectedTab) {
-            SetupTab.entries.forEachIndexed { index, tab ->
-                Tab(
-                    selected = selectedTab == index,
-                    onClick = { selectedTab = index },
-                    text = { Text(tab.label) },
+            Column(modifier = Modifier.padding(start = 12.dp)) {
+                AppText(text = "Setup", style = HealthTheme.type.title)
+                AppText(
+                    text = "Controls and details",
+                    style = HealthTheme.type.small,
+                    color = HealthTheme.colors.muted,
                 )
             }
         }
 
+        SegmentedControl(
+            values = SetupTab.entries.map { it.label },
+            selectedIndex = selectedTab,
+            onSelected = { selectedTab = it },
+            modifier = Modifier.fillMaxWidth(),
+        )
+
         when (SetupTab.entries[selectedTab]) {
-            SetupTab.PERMISSIONS -> PermissionsScreen(onAllPermissionsGranted = onAllPermissionsGranted)
             SetupTab.STATUS -> StatusScreen()
+            SetupTab.PERMISSIONS -> PermissionsScreen(onAllPermissionsGranted = onAllPermissionsGranted)
             SetupTab.SETTINGS -> SettingsScreen()
+            SetupTab.APPEARANCE -> AppearanceScreen()
         }
+    }
+}
+
+@Composable
+private fun AppearanceScreen() {
+    val context = LocalContext.current
+    val settingsStore = remember { SettingsStore(context) }
+    val storedThemeMode by SettingsStore.themeModeFlow.collectAsState()
+    val selectedThemeMode = ThemeMode.fromStored(storedThemeMode)
+
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        AppText(text = "Appearance", style = HealthTheme.type.subtitle)
+        AppText(
+            text = "Choose the app brightness. Scores and status colors stay the same.",
+            color = HealthTheme.colors.muted,
+        )
+        SegmentedControl(
+            values = ThemeMode.entries.map { it.label() },
+            selectedIndex = ThemeMode.entries.indexOf(selectedThemeMode),
+            onSelected = { settingsStore.themeMode = ThemeMode.entries[it].name },
+            modifier = Modifier.fillMaxWidth(),
+        )
     }
 }
 

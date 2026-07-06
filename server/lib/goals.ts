@@ -10,7 +10,10 @@ export interface Goals {
   stepsTarget: number;
   sleepMinutesTarget: number;
   hydrationLitersTarget: number;
-  activeCaloriesTarget: number;
+  // Body-recomposition levers (drive the Home screen's weight-goal view).
+  proteinGramsTarget: number;
+  weeklyWorkoutTarget: number;
+  weightTargetKg: number | null; // null = no target weight set
 }
 
 /**
@@ -21,7 +24,9 @@ export const DEFAULT_GOALS: Goals = {
   stepsTarget: 10000,
   sleepMinutesTarget: 480, // 8h
   hydrationLitersTarget: 2.5,
-  activeCaloriesTarget: 500,
+  proteinGramsTarget: 140,
+  weeklyWorkoutTarget: 4,
+  weightTargetKg: null,
 };
 
 /**
@@ -30,12 +35,20 @@ export const DEFAULT_GOALS: Goals = {
  * and GET /api/home so neither has to import the other.
  */
 export async function getGoals(): Promise<Goals> {
-  const [row] = await db.select().from(userGoals).where(eq(userGoals.id, "default")).limit(1);
+  let row: typeof userGoals.$inferSelect | undefined;
+  try {
+    [row] = await db.select().from(userGoals).where(eq(userGoals.id, "default")).limit(1);
+  } catch (error) {
+    console.warn("Falling back to default goals; user_goals query failed.", error);
+    return { ...DEFAULT_GOALS };
+  }
   if (!row) return { ...DEFAULT_GOALS };
   return {
     stepsTarget: row.stepsTarget,
     sleepMinutesTarget: row.sleepMinutesTarget,
     hydrationLitersTarget: Number(row.hydrationLitersTarget),
-    activeCaloriesTarget: row.activeCaloriesTarget,
+    proteinGramsTarget: row.proteinGramsTarget,
+    weeklyWorkoutTarget: row.weeklyWorkoutTarget,
+    weightTargetKg: row.weightTargetKg === null ? null : Number(row.weightTargetKg),
   };
 }

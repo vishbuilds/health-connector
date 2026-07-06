@@ -66,7 +66,13 @@ export const userGoals = pgTable("user_goals", {
   stepsTarget: integer("steps_target").notNull().default(10000),
   sleepMinutesTarget: integer("sleep_minutes_target").notNull().default(480), // 8h, stored in minutes
   hydrationLitersTarget: numeric("hydration_liters_target").notNull().default("2.5"),
-  activeCaloriesTarget: integer("active_calories_target").notNull().default(500),
+  activeCaloriesTarget: integer("active_calories_target").notNull().default(500), // legacy; Home now derives calorie balance from weight
+  // Body-recomposition goals. proteinGrams and weeklyWorkouts
+  // are the daily/weekly levers; weightTargetKg is the directional objective (null = untargeted,
+  // score just rewards a healthy downward drift). See lib/goals.ts for how each is scored.
+  proteinGramsTarget: integer("protein_grams_target").notNull().default(140),
+  weeklyWorkoutTarget: integer("weekly_workout_target").notNull().default(4),
+  weightTargetKg: numeric("weight_target_kg"), // nullable
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 export type UserGoalsRow = typeof userGoals.$inferSelect;

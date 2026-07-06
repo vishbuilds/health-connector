@@ -10,6 +10,9 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.OutOfQuotaPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
+import java.time.Duration
+import java.time.LocalTime
+import java.time.ZonedDateTime
 import java.util.concurrent.TimeUnit
 
 /**
@@ -64,6 +67,28 @@ object WorkScheduler {
         enqueueInitialBackfill(context)
         enqueuePeriodicSync(context)
         enqueuePeriodicWriteDrain(context)
+        enqueueDailyLogReminders(context)
+    }
+
+    /** Two local daily nudges: weight around 8am, food around 2pm. */
+    fun enqueueDailyLogReminders(context: Context) {
+        // Cancel the retired workout nudge so it stops firing on installs that scheduled it.
+        WorkManager.getInstance(context).cancelUniqueWork(RETIRED_WORKOUT_REMINDER_WORK_NAME)
+        LOG_REMINDER_SLOTS.forEach { slot ->
+            val input = Data.Builder()
+                .putString(LogReminderWorker.KEY_LOG_TARGET, slot.key)
+                .build()
+            val request = PeriodicWorkRequestBuilder<LogReminderWorker>(24, TimeUnit.HOURS)
+                .setConstraints(SYNC_CONSTRAINTS)
+                .setInitialDelay(delayUntil(slot.time), TimeUnit.MILLISECONDS)
+                .setInputData(input)
+                .build()
+            WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+                slot.uniqueWorkName,
+                ExistingPeriodicWorkPolicy.KEEP,
+                request,
+            )
+        }
     }
 
     /**
@@ -110,6 +135,27 @@ object WorkScheduler {
             request,
         )
     }
+}
+
+private data class LogReminderSlot(
+    val key: String,
+    val time: LocalTime,
+    val uniqueWorkName: String,
+)
+
+private val LOG_REMINDER_SLOTS = listOf(
+    LogReminderSlot("weight", LocalTime.of(8, 0), "daily_log_weight_prompt"),
+    LogReminderSlot("food", LocalTime.of(14, 0), "daily_log_food_prompt"),
+)
+
+/** Previously scheduled the 8pm workout nudge; kept only so we can cancel it on upgrade. */
+private const val RETIRED_WORKOUT_REMINDER_WORK_NAME = "daily_log_workout_prompt"
+
+private fun delayUntil(time: LocalTime): Long {
+    val now = ZonedDateTime.now()
+    var next = now.with(time)
+    if (!next.isAfter(now)) next = next.plusDays(1)
+    return Duration.between(now, next).toMillis().coerceAtLeast(0L)
 }
 
 /** Convenience top-level wrapper so [SyncWorker] doesn't need to reference the object directly. */

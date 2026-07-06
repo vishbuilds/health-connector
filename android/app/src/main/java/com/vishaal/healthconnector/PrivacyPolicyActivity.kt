@@ -8,12 +8,14 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.vishaal.healthconnector.ui.theme.AppSurface
+import com.vishaal.healthconnector.ui.theme.AppText
+import com.vishaal.healthconnector.ui.theme.HealthConnectorTheme
+import com.vishaal.healthconnector.ui.theme.HealthTheme
+import com.vishaal.healthconnector.ui.theme.ThemeMode
 
 /**
  * Health Connect requires apps that request permissions to declare an activity that responds
@@ -26,16 +28,19 @@ class PrivacyPolicyActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme {
-                Surface {
+            HealthConnectorTheme(themeMode = ThemeMode.SYSTEM) {
+                AppSurface {
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
                             .padding(24.dp)
                             .verticalScroll(rememberScrollState()),
                     ) {
-                        Text(text = stringResource(id = R.string.privacy_policy_title))
-                        Text(
+                        AppText(
+                            text = stringResource(id = R.string.privacy_policy_title),
+                            style = HealthTheme.type.title,
+                        )
+                        AppText(
                             text = stringResource(id = R.string.privacy_policy_body),
                             modifier = Modifier.padding(top = 16.dp),
                         )

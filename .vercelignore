@@ -1,0 +1,12 @@
+.context
+android
+.git
+.github
+.DS_Store
+
+server/node_modules
+server/.next
+server/next-env.d.ts
+server/.env*
+server/db/migrations
+server/tsconfig.tsbuildinfo

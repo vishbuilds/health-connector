@@ -14,11 +14,11 @@ unrestricted network access.
 gradle-wrapper.properties (this directory) and the gradlew / gradlew.bat
 scripts (android/gradlew, android/gradlew.bat) are standard, deterministic
 text content for the Gradle version pinned in gradle-wrapper.properties
-(8.10.2).
+(8.13).
 
 To use `./gradlew` locally (e.g. from a terminal instead of Android Studio),
 run one of:
-  - `gradle wrapper --gradle-version 8.10.2` from the android/ directory
+  - `gradle wrapper --gradle-version 8.13` from the android/ directory
     with any local Gradle install and normal network access, which will
     (re)generate gradle/wrapper/gradle-wrapper.jar to match the properties
     file already committed here, or

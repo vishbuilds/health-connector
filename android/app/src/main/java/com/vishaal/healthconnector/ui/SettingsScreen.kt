@@ -1,13 +1,10 @@
 package com.vishaal.healthconnector.ui
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.Button
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -15,15 +12,19 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.vishaal.healthconnector.data.SettingsStore
+import com.vishaal.healthconnector.ui.theme.AppButton
+import com.vishaal.healthconnector.ui.theme.AppCard
+import com.vishaal.healthconnector.ui.theme.AppText
+import com.vishaal.healthconnector.ui.theme.AppTextField
+import com.vishaal.healthconnector.ui.theme.HealthTheme
+import com.vishaal.healthconnector.ui.theme.StatusPill
+import com.vishaal.healthconnector.ui.theme.StatusTone
 
 /**
- * Backend URL + bearer token configuration, persisted via [SettingsStore]
- * (EncryptedSharedPreferences). Also displays the generated-once device id so the user can
- * correlate this install with what shows up on the backend.
+ * Backend URL + bearer token configuration, persisted via encrypted shared preferences.
  */
 @Composable
 fun SettingsScreen() {
@@ -34,47 +35,65 @@ fun SettingsScreen() {
     var bearerToken by remember { mutableStateOf(settingsStore.bearerToken ?: "") }
     var justSaved by remember { mutableStateOf(false) }
 
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        Text(text = "Backend configuration")
-        Text(text = "Device ID: ${settingsStore.deviceId}")
+    Column(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        AppCard(modifier = Modifier.fillMaxWidth()) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                StatusPill(
+                    text = if (settingsStore.isConfigured()) "Backend ready" else "Backend needed",
+                    tone = if (settingsStore.isConfigured()) StatusTone.GOOD else StatusTone.WARN,
+                )
+                AppText(text = "Backend", style = HealthTheme.type.subtitle)
+                AppText(
+                    text = "Scores come from your private server. These values stay encrypted on this phone.",
+                    color = HealthTheme.colors.muted,
+                )
+                AppText(
+                    text = "Device ID: ${settingsStore.deviceId}",
+                    style = HealthTheme.type.small,
+                    color = HealthTheme.colors.muted,
+                )
+            }
+        }
 
-        OutlinedTextField(
+        AppTextField(
             value = backendUrl,
             onValueChange = {
                 backendUrl = it
                 justSaved = false
             },
-            label = { Text("Backend URL (e.g. https://example.com)") },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+            label = "Backend URL",
+            modifier = Modifier.fillMaxWidth(),
         )
 
-        OutlinedTextField(
+        AppTextField(
             value = bearerToken,
             onValueChange = {
                 bearerToken = it
                 justSaved = false
             },
-            label = { Text("Bearer token") },
+            label = "Bearer token",
             singleLine = true,
             visualTransformation = PasswordVisualTransformation(),
-            modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+            modifier = Modifier.fillMaxWidth(),
         )
 
-        Button(
+        AppButton(
+            text = "Save backend",
             onClick = {
                 settingsStore.backendUrl = backendUrl.trim()
                 settingsStore.bearerToken = bearerToken.trim()
                 justSaved = true
             },
-            modifier = Modifier.padding(top = 16.dp).fillMaxWidth(),
-        ) {
-            Text("Save")
-        }
+            modifier = Modifier
+                .padding(top = 4.dp)
+                .fillMaxWidth(),
+        )
 
         if (justSaved) {
-            Text(text = "Saved.", modifier = Modifier.padding(top = 8.dp))
+            StatusPill(text = "Saved", tone = StatusTone.GOOD)
         }
     }
 }

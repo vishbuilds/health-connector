@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Adaptive launcher foreground: a bold white "H" centered in the 72x72 safe zone
+    (mirrors the app's primary button style: white glyph on brand green).
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M38,33h10v17h12v-17h10v42h-10v-16h-12v16h-10z" />
+</vector>
