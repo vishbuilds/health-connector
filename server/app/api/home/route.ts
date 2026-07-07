@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { runReadOnlyQuery } from "@/db/client";
 import { isDeviceAuthorized } from "@/lib/device-auth";
 import { getGoals, type Goals } from "@/lib/goals";
-import { basalDayProgressFraction, deriveBmrKcalPerDay, getUserProfile } from "@/lib/profile";
+import { deriveBmrKcalPerDay, getUserProfile } from "@/lib/profile";
 
 /**
  * Device-facing Home data for a bodyweight / body-recomposition goal. The screen is built around one
@@ -1311,8 +1311,7 @@ export async function GET(request: NextRequest) {
   const intakeEnergy = Math.round(num(row.nutrition_energy_today) ?? 0);
   const activeEnergy = Math.round(num(row.active_energy_today) ?? 0);
   const latestBmr = deriveBmrKcalPerDay(latestWeight, bodyFat, targetDate, profile, num(row.latest_bmr)).kcalPerDay;
-  const basalDayFrac = basalDayProgressFraction(isToday, now.minutes);
-  const estimatedBasalBurn = latestBmr !== null ? latestBmr * basalDayFrac : 0;
+  const estimatedBasalBurn = latestBmr ?? 0;
   const burnedEnergy = Math.round(activeEnergy + estimatedBasalBurn);
 
   // Weight series arrives newest → oldest; flip to oldest → newest for the sparkline + fit.
@@ -1371,13 +1370,14 @@ export async function GET(request: NextRequest) {
     ],
   };
 
-  // Calorie balance: intake - estimated daily expenditure (active burn + basal burn). Raw
-  // TotalCaloriesBurnedRecord rows are interval records and are not treated as full-day burn.
-  // The target is derived from the latest bodyweight at 0.5%
-  // body weight per week, with sign chosen by goal weight direction (deficit / surplus / maintenance).
+  // Calorie balance: intake - estimated daily expenditure (active burn + a full-day basal burn).
+  // Raw TotalCaloriesBurnedRecord rows are interval records and are not treated as full-day burn.
+  // The target is derived from the latest bodyweight at 0.5% body weight per week, with sign chosen
+  // by goal weight direction (deficit / surplus / maintenance).
   const balanceTarget = calorieTargetFromWeight(latestWeight, goals);
+  const fullDayFraction = 1;
   const energy_lever: Lever = {
-    ...energyBalanceLever(intakeEnergy - burnedEnergy, balanceTarget, intakeEnergy, burnedEnergy, dayFrac),
+    ...energyBalanceLever(intakeEnergy - burnedEnergy, balanceTarget, intakeEnergy, burnedEnergy, fullDayFraction),
     lineItems: [
       ...signedLineItems(intakeItems, "Food · ", "+"),
       ...signedLineItems(activeBurnItems, "Burn · ", "-"),

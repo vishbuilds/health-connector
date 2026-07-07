@@ -76,42 +76,12 @@ data class HomeLeverLineItem(
     val time: String? = null,
 )
 
-/** One 0..100 daily score point, oldest → newest for trend charts. */
-data class ScorePoint(
-    val date: String,
-    val value: Int,
-)
-
-/** A contributor inside the recovery score. */
-data class HomeRecoveryMetric(
-    val key: String,
-    val title: String,
-    val score: Int,
-    val label: String,
-    val status: String,
-    val value: Double,
-    val unit: String,
-    val series: List<ScorePoint>,
-    val detail: String,
-)
-
-/** Oura-inspired composite: Readiness + Sleep + Stress balance, with a 14-day score trend. */
-data class HomeRecoveryScore(
-    val score: Int,
-    val label: String,
-    val status: String,
-    val series: List<ScorePoint>,
-    val metrics: List<HomeRecoveryMetric>,
-    val detail: String,
-)
-
 /** The full Home payload from GET /api/home: the weight hero, four levers, and insight strings. */
 data class HomeSummary(
     val date: String?,
     val isToday: Boolean,
     val objective: String,
     val overall: HomeDayStatus,
-    val recovery: HomeRecoveryScore,
     val weight: HomeWeight,
     val levers: List<HomeLever>,
     val insights: List<String>,
@@ -182,15 +152,6 @@ class HomeApi(private val settingsStore: SettingsStore) {
             isToday = this["isToday"]?.jsonPrimitive?.booleanOrNull ?: true,
             objective = this["objective"]?.jsonPrimitive?.contentOrNull ?: "Fat loss",
             overall = this["overall"]?.jsonObject?.toDayStatus() ?: HomeDayStatus(0, "—", "attention"),
-            recovery = (this["recovery"] ?: this["meta"])?.jsonObject?.toRecoveryScore()
-                ?: HomeRecoveryScore(
-                    score = this["overall"]?.jsonObject?.toDayStatus()?.score ?: 0,
-                    label = "Syncing",
-                    status = "fair",
-                    series = emptyList(),
-                    metrics = emptyList(),
-                    detail = "Recovery trend unavailable.",
-                ),
             weight = this["weight"]?.jsonObject?.toWeight() ?: emptyWeight(),
             levers = levers,
             insights = insights,
@@ -258,31 +219,4 @@ class HomeApi(private val settingsStore: SettingsStore) {
             if (label != null && value != null) HomeLeverLineItem(label, value, time) else null
         } ?: emptyList(),
     )
-
-    private fun JsonObject.toRecoveryScore(): HomeRecoveryScore = HomeRecoveryScore(
-        score = this["score"]?.jsonPrimitive?.intOrNull ?: 0,
-        label = this["label"]?.jsonPrimitive?.contentOrNull ?: "—",
-        status = this["status"]?.jsonPrimitive?.contentOrNull ?: "attention",
-        series = this["series"]?.jsonArray?.mapNotNull { it.jsonObject.toScorePointOrNull() } ?: emptyList(),
-        metrics = this["metrics"]?.jsonArray?.map { it.jsonObject.toRecoveryMetric() } ?: emptyList(),
-        detail = this["detail"]?.jsonPrimitive?.contentOrNull ?: "",
-    )
-
-    private fun JsonObject.toRecoveryMetric(): HomeRecoveryMetric = HomeRecoveryMetric(
-        key = this["key"]?.jsonPrimitive?.contentOrNull ?: "",
-        title = this["title"]?.jsonPrimitive?.contentOrNull ?: "",
-        score = this["score"]?.jsonPrimitive?.intOrNull ?: 0,
-        label = this["label"]?.jsonPrimitive?.contentOrNull ?: "—",
-        status = this["status"]?.jsonPrimitive?.contentOrNull ?: "attention",
-        value = this["value"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
-        unit = this["unit"]?.jsonPrimitive?.contentOrNull ?: "",
-        series = this["series"]?.jsonArray?.mapNotNull { it.jsonObject.toScorePointOrNull() } ?: emptyList(),
-        detail = this["detail"]?.jsonPrimitive?.contentOrNull ?: "",
-    )
-
-    private fun JsonObject.toScorePointOrNull(): ScorePoint? {
-        val date = this["date"]?.jsonPrimitive?.contentOrNull ?: return null
-        val value = this["value"]?.jsonPrimitive?.intOrNull ?: return null
-        return ScorePoint(date = date, value = value)
-    }
 }

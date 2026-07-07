@@ -48,12 +48,9 @@ import com.vishaal.healthconnector.logic.openClaude
 import com.vishaal.healthconnector.network.HomeApi
 import com.vishaal.healthconnector.network.HomeLever
 import com.vishaal.healthconnector.network.HomeLeverLineItem
-import com.vishaal.healthconnector.network.HomeRecoveryMetric
-import com.vishaal.healthconnector.network.HomeRecoveryScore
 import com.vishaal.healthconnector.network.HomeResult
 import com.vishaal.healthconnector.network.HomeSummary
 import com.vishaal.healthconnector.network.HomeWeight
-import com.vishaal.healthconnector.network.ScorePoint
 import com.vishaal.healthconnector.ui.theme.AppButton
 import com.vishaal.healthconnector.ui.theme.AppCard
 import com.vishaal.healthconnector.ui.theme.AppIcon
@@ -228,7 +225,7 @@ private fun HomeTopBar(
                 )
             }
             AppText(
-                text = if (date == today) "Paced to the time of day" else "Full-day recap",
+                text = if (date == today) "Today's overview" else "Full-day recap",
                 style = HealthTheme.type.small,
                 color = HealthTheme.colors.muted,
                 maxLines = 1,
@@ -300,8 +297,6 @@ private fun HomeLoaded(
                 AppText(text = notice, style = HealthTheme.type.body, color = HealthTheme.colors.ink)
             }
         }
-
-        RecoveryScoreCard(recovery = summary.recovery)
 
         InsightList(insights = summary.insights.take(3))
 
@@ -604,73 +599,6 @@ private fun LeverLineItemRow(
 }
 
 @Composable
-private fun RecoveryScoreCard(recovery: HomeRecoveryScore) {
-    var expanded by remember { mutableStateOf(false) }
-    val statusColor = colorForStatus(recovery.status)
-
-    AppCard(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { expanded = !expanded },
-        background = HealthTheme.colors.surface,
-    ) {
-        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                AppIcon(
-                    icon = AppIconKind.HEART,
-                    tint = statusColor,
-                    modifier = Modifier
-                        .padding(end = 6.dp)
-                        .size(20.dp),
-                )
-                AppText(text = "Recovery score", style = HealthTheme.type.subtitle, modifier = Modifier.weight(1f))
-                AppText(text = recovery.label, style = HealthTheme.type.label, color = statusColor, maxLines = 1)
-                AppIcon(
-                    icon = AppIconKind.CHEVRON,
-                    tint = HealthTheme.colors.muted,
-                    modifier = Modifier
-                        .padding(start = 6.dp)
-                        .size(18.dp),
-                )
-            }
-
-            Row(verticalAlignment = Alignment.Bottom) {
-                AppText(text = recovery.score.toString(), style = HealthTheme.type.display)
-                AppText(
-                    text = " / 100",
-                    style = HealthTheme.type.subtitle,
-                    color = HealthTheme.colors.muted,
-                    modifier = Modifier.padding(bottom = 4.dp),
-                )
-                Spacer(modifier = Modifier.weight(1f))
-                AppText(
-                    text = "Readiness · Sleep · Stress",
-                    style = HealthTheme.type.small,
-                    color = HealthTheme.colors.muted,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(bottom = 6.dp),
-                )
-            }
-
-            TrendSparklineWithAxis(
-                values = recovery.series.map { it.value.coerceIn(0, 100).toFloat() },
-                dates = recovery.series.map { it.date },
-                color = statusColor,
-            )
-
-            if (expanded) {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    recovery.metrics.forEach { metric ->
-                        RecoveryMetricRow(metric = metric)
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
 private fun TrendSparklineWithAxis(
     values: List<Float>,
     dates: List<String>,
@@ -731,54 +659,6 @@ private fun MinimalXAxis(
 
 private fun axisDateLabel(date: String): String =
     runCatching { LocalDate.parse(date).format(AXIS_DATE_FORMAT) }.getOrDefault(date)
-
-@Composable
-private fun RecoveryMetricRow(metric: HomeRecoveryMetric) {
-    val color = colorForMetric(metric)
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        AppIcon(
-            icon = iconForMetric(metric.key),
-            tint = color,
-            modifier = Modifier.size(20.dp),
-        )
-        Column(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                AppText(text = metric.title, style = HealthTheme.type.label, modifier = Modifier.weight(1f))
-                AppText(text = metricValue(metric), style = HealthTheme.type.label, color = HealthTheme.colors.ink)
-            }
-            Sparkline(
-                values = metric.series.map { it.value.toFloat() },
-                color = color,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(34.dp),
-            )
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                ProgressBar(
-                    progress = metric.score.coerceIn(0, 100) / 100f,
-                    color = color,
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(8.dp),
-                )
-                AppText(
-                    text = metric.label,
-                    style = HealthTheme.type.small,
-                    color = colorForStatus(metric.status),
-                    modifier = Modifier.padding(start = 8.dp),
-                    maxLines = 1,
-                )
-            }
-        }
-    }
-}
 
 @Composable
 private fun HomeActionCard(
@@ -875,7 +755,7 @@ private fun InsightList(insights: List<String>) {
     }
 }
 
-/** Skeleton that mirrors the loaded layout (weight hero, 2x2 lever grid, recovery score). */
+/** Skeleton that mirrors the loaded layout (weight hero, 2x2 lever grid, action card). */
 @Composable
 private fun HomeSkeleton() {
     Column(
@@ -1115,27 +995,6 @@ private fun iconForLever(key: String): AppIconKind = when (key) {
     else -> AppIconKind.TREND
 }
 
-private fun metricValue(metric: HomeRecoveryMetric): String = when (metric.unit) {
-    "h" -> "${fmt1(metric.value)}h"
-    "score" -> metric.score.toString()
-    else -> if (metric.unit.isBlank()) fmt1(metric.value) else "${fmt1(metric.value)} ${metric.unit}"
-}
-
-private fun iconForMetric(key: String): AppIconKind = when (key) {
-    "readiness" -> AppIconKind.HEART
-    "sleep" -> AppIconKind.SLEEP
-    "stress" -> AppIconKind.FLAME
-    else -> AppIconKind.TREND
-}
-
-@Composable
-private fun colorForMetric(metric: HomeRecoveryMetric): Color = when (metric.key) {
-    "readiness" -> HealthTheme.colors.blue
-    "sleep" -> HealthTheme.colors.primary
-    "stress" -> HealthTheme.colors.yellow
-    else -> colorForStatus(metric.status)
-}
-
 @Composable
 private fun colorForStatus(status: String): Color = when (status) {
     "optimal" -> HealthTheme.colors.primary
@@ -1225,7 +1084,7 @@ private fun sampleLeverLineItems(key: String): List<HomeLeverLineItem> {
             HomeLeverLineItem("Food · Small low-fat cappuccino", "+60 kcal · 6.4g protein", "08:00"),
             HomeLeverLineItem("Food · Banana", "+107 kcal · 1.7g protein", "08:00"),
             HomeLeverLineItem("Burn · Oura active burn", "-120 kcal", "04:00"),
-            HomeLeverLineItem("Basal estimate", "-840 kcal"),
+            HomeLeverLineItem("Basal estimate", "-1,680 kcal"),
         )
         else -> emptyList()
     }
@@ -1242,53 +1101,12 @@ private fun sampleLevers(training: Int = 2): List<HomeLever> = listOf(
     sampleLever("energy_balance", "Calorie balance", 88, "On target", "optimal", -320.0, -440.0, "kcal"),
 )
 
-private fun sampleScoreSeries(from: Int, to: Int, n: Int = 14): List<ScorePoint> =
-    (0 until n).map { i ->
-        val t = i.toDouble() / (n - 1)
-        val wave = (sin(i * 0.8) * 4).roundToInt()
-        ScorePoint(date = "2026-06-%02d".format(i + 18), value = (from + ((to - from) * t)).roundToInt() + wave)
-    }
-
-private fun sampleRecoveryMetric(
-    key: String,
-    title: String,
-    score: Int,
-    label: String,
-    status: String,
-    value: Double,
-    unit: String,
-): HomeRecoveryMetric = HomeRecoveryMetric(
-    key = key,
-    title = title,
-    score = score,
-    label = label,
-    status = status,
-    value = value,
-    unit = unit,
-    series = sampleScoreSeries(score - 8, score),
-    detail = "",
-)
-
-private fun sampleRecovery(score: Int = 82): HomeRecoveryScore = HomeRecoveryScore(
-    score = score,
-    label = "Steady",
-    status = "good",
-    series = sampleScoreSeries(76, score),
-    metrics = listOf(
-        sampleRecoveryMetric("readiness", "Readiness", 84, "Recovered", "good", 84.0, "score"),
-        sampleRecoveryMetric("sleep", "Sleep", 78, "Enough", "good", 7.4, "h"),
-        sampleRecoveryMetric("stress", "Stress", 83, "Balanced", "good", 83.0, "score"),
-    ),
-    detail = "Readiness, sleep, and stress balance over 14 days.",
-)
-
 private fun sampleSummary(weight: HomeWeight, levers: List<HomeLever>, insights: List<String>): HomeSummary =
     HomeSummary(
         date = "2026-07-06",
         isToday = true,
         objective = "Fat loss",
         overall = HomeDayStatus(score = 82, label = "On track", status = "optimal"),
-        recovery = sampleRecovery(),
         weight = weight,
         levers = levers,
         insights = insights,
