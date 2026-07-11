@@ -32,6 +32,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.DirectionsWalk
 import androidx.compose.material.icons.automirrored.rounded.TrendingUp
+import androidx.compose.material.icons.rounded.Balance
 import androidx.compose.material.icons.rounded.Bedtime
 import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.CalendarToday
@@ -730,6 +731,7 @@ enum class AppIconKind(val imageVector: ImageVector) {
     TREND_DOWN(Icons.Rounded.TrendingDown),
     TREND_FLAT(Icons.Rounded.TrendingFlat),
     STAR(Icons.Rounded.Star),
+    BALANCE(Icons.Rounded.Balance),
     COOKIE(Icons.Rounded.Cookie),
 }
 

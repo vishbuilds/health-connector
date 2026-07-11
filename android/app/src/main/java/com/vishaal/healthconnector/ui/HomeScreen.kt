@@ -53,10 +53,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.vishaal.healthconnector.R
 import com.vishaal.healthconnector.data.SettingsStore
 import com.vishaal.healthconnector.logic.LogTarget
@@ -891,25 +895,26 @@ private fun LeverLineItemGroupRows(
             group.items.forEach { item ->
                 LeverLineItemRow(item = item)
             }
-            // A per-meal tally: only when the group genuinely sums more than one line, and only for
-            // the figures we can parse (calories / protein) — steps-style groups get no subtotal.
-            if (group.items.size > 1) {
-                val totals = mealTotal(group.items)
-                mealTotalLabel(totals)?.let { label ->
-                    MealTotalRow(text = label, rating = mealRating(totals))
-                }
+            // A per-meal tally line — carries the calorie/protein sum and its rating icon
+            // (cookie/star). Shown for every group, including single-item meals, so each food gets
+            // its own verdict; only for figures we can parse (calories / protein) — steps-style
+            // groups parse to nothing and get no subtotal.
+            val totals = mealTotal(group.items)
+            mealTotalLabel(totals)?.let { label ->
+                MealTotalRow(text = label, total = totals, rating = mealRating(totals))
             }
         }
     }
 }
 
 /**
- * A subtle divider + right-aligned tally that closes out a time group's line items. A [rating] adds
- * a small leading icon — a star for a protein-dense meal, a cookie for a poor calorie/protein
- * trade-off; an OK (or unrated) meal shows no icon.
+ * A subtle divider + right-aligned tally that closes out a time group's line items. When the meal
+ * carries a [rating], a tappable verdict chip (star / scales / cookie) precedes the total and opens
+ * [MealRatingDialog] to explain how the verdict was reached.
  */
 @Composable
-private fun MealTotalRow(text: String, rating: MealRating?) {
+private fun MealTotalRow(text: String, total: MealTotal, rating: MealRating?) {
+    var explain by remember { mutableStateOf(false) }
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Box(
             modifier = Modifier
@@ -922,19 +927,9 @@ private fun MealTotalRow(text: String, rating: MealRating?) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.End,
         ) {
-            val icon = when (rating) {
-                MealRating.GREAT -> AppIconKind.STAR
-                MealRating.NAUGHTY -> AppIconKind.COOKIE
-                else -> null
-            }
-            if (icon != null) {
-                AppIcon(
-                    icon = icon,
-                    tint = if (rating == MealRating.GREAT) HealthTheme.colors.primary else HealthTheme.colors.red,
-                    modifier = Modifier
-                        .padding(end = 6.dp)
-                        .size(15.dp),
-                )
+            if (rating != null) {
+                RatingChip(rating = rating, onClick = { explain = true })
+                Spacer(modifier = Modifier.width(8.dp))
             }
             AppText(
                 text = text,
@@ -943,6 +938,207 @@ private fun MealTotalRow(text: String, rating: MealRating?) {
                 maxLines = 1,
             )
         }
+    }
+    if (explain && rating != null) {
+        MealRatingDialog(total = total, rating = rating, onDismiss = { explain = false })
+    }
+}
+
+/** Visual identity for each meal verdict — icon, accent, soft chip fill, plain word, and band range. */
+private data class RatingVisual(
+    val icon: AppIconKind,
+    val accent: Color,
+    val soft: Color,
+    val word: String,
+    val band: String,
+)
+
+@Composable
+private fun ratingVisual(rating: MealRating): RatingVisual {
+    val c = HealthTheme.colors
+    return when (rating) {
+        // primaryDark (not primary) so the icon clears 3:1 against its soft-green chip in light mode.
+        MealRating.GREAT -> RatingVisual(AppIconKind.STAR, c.primaryDark, c.primarySoft, "Protein-dense", "30% or more")
+        MealRating.OK -> RatingVisual(AppIconKind.BALANCE, c.blue, c.blueSoft, "Balanced", "20–30%")
+        MealRating.NAUGHTY -> RatingVisual(AppIconKind.COOKIE, c.red, c.redSoft, "Light on protein", "Under 20%")
+    }
+}
+
+/** Tappable pill carrying a meal's verdict icon; opens the explanation dialog. */
+@Composable
+private fun RatingChip(rating: MealRating, onClick: () -> Unit) {
+    val visual = ratingVisual(rating)
+    val interaction = remember { MutableInteractionSource() }
+    Box(
+        modifier = Modifier
+            .clip(CircleShape)
+            .background(visual.soft)
+            .clickable(
+                interactionSource = interaction,
+                indication = LocalIndication.current,
+                role = Role.Button,
+                onClickLabel = "Why this meal is rated ${visual.word}",
+                onClick = onClick,
+            )
+            .padding(8.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        AppIcon(icon = visual.icon, tint = visual.accent, modifier = Modifier.size(16.dp))
+    }
+}
+
+/**
+ * Explains a meal's protein verdict: the actual protein share of calories, the plain math behind it,
+ * and where it lands across the three bands. Read-only; dismiss via the scrim or the button.
+ */
+@Composable
+private fun MealRatingDialog(total: MealTotal, rating: MealRating, onDismiss: () -> Unit) {
+    val visual = ratingVisual(rating)
+    val proteinKcal = (total.proteinGrams * 4.0).roundToInt()
+    val share = if (total.kcal > 0) (total.proteinGrams * 4.0 / total.kcal) else 0.0
+    val sharePct = (share * 100).roundToInt()
+
+    // A brief scale-and-fade in — state feedback, not decoration; skipped under reduced motion.
+    val reduced = LocalReducedMotion.current
+    var shown by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { shown = true }
+    val appear by animateFloatAsState(
+        targetValue = if (shown || reduced) 1f else 0f,
+        animationSpec = tween(Motion.Medium, easing = Motion.EaseOut),
+        label = "ratingDialogIn",
+    )
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        AppCard(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 28.dp)
+                .graphicsLayer {
+                    alpha = appear
+                    val s = 0.94f + 0.06f * appear
+                    scaleX = s
+                    scaleY = s
+                },
+            background = HealthTheme.colors.surfaceStrong,
+            border = HealthTheme.colors.border,
+            padding = PaddingValues(22.dp),
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
+                // Header — verdict icon + word + the headline share.
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    Box(
+                        modifier = Modifier.size(46.dp).clip(CircleShape).background(visual.soft),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        AppIcon(icon = visual.icon, tint = visual.accent, modifier = Modifier.size(24.dp))
+                    }
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        AppText(text = visual.word, style = HealthTheme.type.subtitle, color = HealthTheme.colors.ink)
+                        AppText(
+                            text = "$sharePct% of calories from protein",
+                            style = HealthTheme.type.small,
+                            color = HealthTheme.colors.muted,
+                        )
+                    }
+                }
+
+                // The plain-language math — actual figures, no false precision.
+                AppText(
+                    text = "This meal is ${grouped(total.kcal)} kcal with ${fmt1(total.proteinGrams)} g protein. " +
+                        "Protein carries 4 kcal per gram, so that's $proteinKcal kcal — $sharePct% of the total. " +
+                        "The more of a meal's energy that comes from protein, the better it supports a recomp.",
+                    style = HealthTheme.type.body,
+                    color = HealthTheme.colors.muted,
+                )
+
+                // Where this meal lands across the three bands (scale runs 0–40%).
+                ProteinShareBar(share = share)
+
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    RatingBandRow(MealRating.GREAT, active = rating == MealRating.GREAT)
+                    RatingBandRow(MealRating.OK, active = rating == MealRating.OK)
+                    RatingBandRow(MealRating.NAUGHTY, active = rating == MealRating.NAUGHTY)
+                }
+
+                AppButton(text = "Got it", onClick = onDismiss, modifier = Modifier.fillMaxWidth())
+            }
+        }
+    }
+}
+
+/**
+ * A three-zone track (low / balanced / high protein share) with a marker at [share]'s position.
+ * The scale runs 0–40%, so the 20% and 30% thresholds fall exactly on the zone seams. Illustrative
+ * of where the meal sits — the exact figure is stated in words above.
+ */
+@Composable
+private fun ProteinShareBar(share: Double) {
+    val c = HealthTheme.colors
+    val trackHeight = 12.dp
+    // Clamp a hair off each edge so the marker never clips at the extremes.
+    val fraction = (share / 0.40).coerceIn(0.03, 0.97).toFloat()
+    Box(
+        modifier = Modifier.fillMaxWidth().height(22.dp),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)),
+        ) {
+            Box(modifier = Modifier.weight(2f).height(trackHeight).background(c.redSoft))
+            Box(modifier = Modifier.weight(1f).height(trackHeight).background(c.blueSoft))
+            Box(modifier = Modifier.weight(1f).height(trackHeight).background(c.primarySoft))
+        }
+        // Marker — a slim ink pointer positioned via a fractional-width spacer.
+        Box(modifier = Modifier.fillMaxWidth(fraction)) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .width(4.dp)
+                    .height(22.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(c.ink),
+            )
+        }
+    }
+}
+
+/** One legend row for a band; [active] lights it (soft fill, full-ink text), the others recede. */
+@Composable
+private fun RatingBandRow(rating: MealRating, active: Boolean) {
+    val visual = ratingVisual(rating)
+    val c = HealthTheme.colors
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (active) visual.soft else Color.Transparent)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        AppIcon(
+            icon = visual.icon,
+            tint = if (active) visual.accent else c.muted,
+            modifier = Modifier.size(16.dp),
+        )
+        AppText(
+            text = visual.word,
+            style = HealthTheme.type.label,
+            color = if (active) c.ink else c.muted,
+            modifier = Modifier.weight(1f),
+        )
+        AppText(
+            text = visual.band,
+            // ink (not accent) when active: accent-on-soft is only ~3:1, below the 4.5:1 text bar.
+            style = HealthTheme.type.small,
+            color = if (active) c.ink else c.muted,
+        )
     }
 }
 
@@ -1393,14 +1589,14 @@ private fun mealTotal(items: List<HomeLeverLineItem>): MealTotal {
 }
 
 /**
- * How well a meal traded calories for protein. GREAT = protein-dense, NAUGHTY = a poor trade-off
- * (lots of calories, little protein), OK = unremarkable (no icon). Judged on protein's share of the
- * meal's calories (protein is 4 kcal/g): ≥30% is great, <20% is naughty.
+ * How well a meal traded calories for protein. GREAT = protein-dense (star), NAUGHTY = a poor
+ * trade-off (cookie), OK = balanced (scales). Judged on protein's share of the meal's calories
+ * (protein is 4 kcal/g): ≥30% is great, <20% is naughty, in between is balanced.
  */
 private enum class MealRating { GREAT, OK, NAUGHTY }
 
-/** Minimum calories before we pass judgement — a lone banana or black coffee isn't a "meal". */
-private const val MEAL_JUDGE_MIN_KCAL = 150
+/** Minimum calories before we pass judgement — below this (black coffee, water, gum) isn't worth rating. */
+private const val MEAL_JUDGE_MIN_KCAL = 50
 
 private fun mealRating(total: MealTotal): MealRating? {
     if (!total.hasKcal || !total.hasProtein) return null
