@@ -925,12 +925,12 @@ private fun MealTotalRow(text: String, total: MealTotal, rating: MealRating?) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.End,
         ) {
+            // Verdict chip hugs the left; the kcal/protein tally stays flush right.
             if (rating != null) {
                 RatingChip(rating = rating, onClick = { explain = true })
-                Spacer(modifier = Modifier.width(8.dp))
             }
+            Spacer(modifier = Modifier.weight(1f))
             AppText(
                 text = text,
                 style = HealthTheme.type.label,
@@ -971,7 +971,7 @@ private fun RatingChip(rating: MealRating, onClick: () -> Unit) {
     val interaction = remember { MutableInteractionSource() }
     Box(
         modifier = Modifier
-            .clip(CircleShape)
+            .clip(RoundedCornerShape(10.dp))
             .background(visual.soft)
             .clickable(
                 interactionSource = interaction,
@@ -1033,7 +1033,7 @@ private fun MealRatingDialog(total: MealTotal, rating: MealRating, onDismiss: ()
                     horizontalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
                     Box(
-                        modifier = Modifier.size(46.dp).clip(CircleShape).background(visual.soft),
+                        modifier = Modifier.size(46.dp).clip(RoundedCornerShape(14.dp)).background(visual.soft),
                         contentAlignment = Alignment.Center,
                     ) {
                         AppIcon(icon = visual.icon, tint = visual.accent, modifier = Modifier.size(24.dp))
