@@ -1,12 +1,26 @@
 package com.vishaal.healthconnector.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -17,6 +31,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
@@ -33,9 +51,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -56,16 +74,26 @@ import com.vishaal.healthconnector.ui.theme.AppCard
 import com.vishaal.healthconnector.ui.theme.AppIcon
 import com.vishaal.healthconnector.ui.theme.AppIconKind
 import com.vishaal.healthconnector.ui.theme.AppText
+import com.vishaal.healthconnector.ui.theme.CelebrationEvent
+import com.vishaal.healthconnector.ui.theme.CelebrationOverlay
 import com.vishaal.healthconnector.ui.theme.HealthTheme
 import com.vishaal.healthconnector.ui.theme.IconButton
+import com.vishaal.healthconnector.ui.theme.LocalReducedMotion
+import com.vishaal.healthconnector.ui.theme.Motion
 import com.vishaal.healthconnector.ui.theme.ProgressBar
+import com.vishaal.healthconnector.ui.theme.PullToRefresh
 import com.vishaal.healthconnector.ui.theme.SkeletonBox
 import com.vishaal.healthconnector.ui.theme.Sparkline
 import com.vishaal.healthconnector.ui.theme.TextButton
+import com.vishaal.healthconnector.ui.theme.animatedNumber
+import com.vishaal.healthconnector.ui.theme.countUpNumber
+import com.vishaal.healthconnector.ui.theme.enterOnce
+import com.vishaal.healthconnector.ui.theme.pressScale
 import androidx.compose.ui.tooling.preview.Preview
 import com.vishaal.healthconnector.network.HomeDayStatus
 import com.vishaal.healthconnector.network.WeightPoint
 import com.vishaal.healthconnector.ui.theme.AppSurface
+import com.vishaal.healthconnector.ui.theme.ambientBackground
 import com.vishaal.healthconnector.ui.theme.HealthConnectorTheme
 import com.vishaal.healthconnector.ui.theme.ThemeMode
 import kotlinx.coroutines.launch
@@ -98,71 +126,145 @@ fun HomeScreen(onOpenMenu: () -> Unit) {
     // Per-day cache + per-day reload counter, hoisted so paging away and back keeps loaded data.
     val cache = remember { mutableStateMapOf<String, HomeUiState>() }
     val reloadKeys = remember { mutableStateMapOf<String, Int>() }
+    // The reload tick each day was last fetched at, so paging back to a loaded day never re-fetches
+    // but an explicit reload/pull-to-refresh (which bumps the tick) always does.
+    val handledTicks = remember { mutableStateMapOf<String, Int>() }
+    val refreshingKeys = remember { mutableStateMapOf<String, Boolean>() }
     var notice by remember { mutableStateOf<String?>(null) }
+    var selectedLeverKey by remember { mutableStateOf<String?>(null) }
+    var celebration by remember { mutableStateOf<CelebrationEvent?>(null) }
 
     // Today is the rightmost page; swiping right reveals older days.
     val pagerState = rememberPagerState(initialPage = DAYS_WINDOW - 1, pageCount = { DAYS_WINDOW })
     fun dateForPage(page: Int): LocalDate = today.minusDays((DAYS_WINDOW - 1 - page).toLong())
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(HealthTheme.colors.background)
-            .padding(horizontal = 18.dp, vertical = 12.dp),
-    ) {
-        val currentDate = dateForPage(pagerState.currentPage)
-        HomeTopBar(
-            date = currentDate,
-            today = today,
-            canGoOlder = pagerState.currentPage > 0,
-            canGoNewer = pagerState.currentPage < DAYS_WINDOW - 1,
-            onOlder = { scope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) } },
-            onNewer = { scope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) } },
-            onOpenMenu = onOpenMenu,
-        )
-        HorizontalPager(
-            state = pagerState,
-            modifier = Modifier.weight(1f),
-            beyondViewportPageCount = 1,
-        ) { page ->
-            val date = dateForPage(page)
-            val key = date.toString()
-            val isToday = date == today
+    // Android system back: first collapse an open lever detail, then step back from an older day to
+    // today — only falling through to the default (exit) once we're on today's daily view. Today is
+    // the trailing (rightmost) page, so navigating "back" to it means scrolling to the last page.
+    val todayPage = DAYS_WINDOW - 1
+    BackHandler(enabled = selectedLeverKey != null) {
+        selectedLeverKey = null
+    }
+    BackHandler(enabled = selectedLeverKey == null && pagerState.currentPage != todayPage) {
+        scope.launch { pagerState.animateScrollToPage(todayPage) }
+    }
 
-            LaunchedEffect(key, reloadKeys[key]) {
-                if (cache[key] is HomeUiState.Loaded) return@LaunchedEffect
-                cache[key] = HomeUiState.Loading
-                cache[key] = fetchDay(context, date, isToday)
-            }
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .ambientBackground()
+                .padding(horizontal = 18.dp, vertical = 12.dp),
+        ) {
+            HomeDayTabs(
+                today = today,
+                currentPage = pagerState.currentPage,
+                pageCount = DAYS_WINDOW,
+                dateForPage = { dateForPage(it) },
+                onSelectPage = { page -> scope.launch { pagerState.animateScrollToPage(page) } },
+            )
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier.weight(1f),
+                beyondViewportPageCount = 1,
+            ) { page ->
+                val date = dateForPage(page)
+                val key = date.toString()
+                val isToday = date == today
 
-            AnimatedContent(
-                targetState = cache[key] ?: HomeUiState.Loading,
-                label = "home-day-$key",
-                modifier = Modifier.fillMaxSize(),
-            ) { current ->
-                when (current) {
-                    HomeUiState.Loading -> HomeSkeleton()
-                    HomeUiState.Empty -> HomeEmpty(
-                        onOpenMenu = onOpenMenu,
-                        onRetry = { reloadKeys[key] = (reloadKeys[key] ?: 0) + 1 },
-                    )
-                    is HomeUiState.Error -> HomeError(
-                        message = current.message,
-                        onRetry = { reloadKeys[key] = (reloadKeys[key] ?: 0) + 1 },
-                    )
-                    is HomeUiState.Loaded -> HomeLoaded(
-                        summary = current.summary,
-                        notice = notice.takeIf { isToday },
-                        onLogWithClaude = { prompt ->
-                            copyLogPrompt(context, prompt)
-                            openClaude(context, prompt)
-                            notice = "Prompt copied. Paste it into Claude when it opens."
-                        },
-                    )
+                LaunchedEffect(key, reloadKeys[key]) {
+                    val tick = reloadKeys[key] ?: 0
+                    val cachedLoaded = cache[key] as? HomeUiState.Loaded
+                    // Already showing this day's data for this tick — nothing to do (paged back).
+                    if (cachedLoaded != null && handledTicks[key] == tick) return@LaunchedEffect
+                    // On a refresh we keep the current data on screen (the pull spinner carries the
+                    // wait) instead of flashing a skeleton; a first/failed load shows the skeleton.
+                    if (cachedLoaded == null) cache[key] = HomeUiState.Loading
+                    val result = fetchDay(context, date, isToday)
+                    if (cachedLoaded != null && result is HomeUiState.Loaded && isToday) {
+                        improvementMessage(cachedLoaded.summary, result.summary)?.let {
+                            celebration = CelebrationEvent(it)
+                        }
+                    }
+                    cache[key] = result
+                    handledTicks[key] = tick
+                    refreshingKeys[key] = false
+                }
+
+                PullToRefresh(
+                    isRefreshing = refreshingKeys[key] == true,
+                    onRefresh = {
+                        refreshingKeys[key] = true
+                        reloadKeys[key] = (reloadKeys[key] ?: 0) + 1
+                    },
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    AnimatedContent(
+                        targetState = cache[key] ?: HomeUiState.Loading,
+                        label = "home-day-$key",
+                        modifier = Modifier.fillMaxSize(),
+                    ) { current ->
+                        when (current) {
+                            HomeUiState.Loading -> HomeSkeleton()
+                            HomeUiState.Empty -> HomeEmpty(
+                                onOpenMenu = onOpenMenu,
+                                onRetry = { reloadKeys[key] = (reloadKeys[key] ?: 0) + 1 },
+                            )
+                            is HomeUiState.Error -> HomeError(
+                                message = current.message,
+                                onRetry = { reloadKeys[key] = (reloadKeys[key] ?: 0) + 1 },
+                            )
+                            is HomeUiState.Loaded -> HomeLoaded(
+                                summary = current.summary,
+                                selectedLeverKey = selectedLeverKey,
+                                onSelectedLeverChange = { selectedLeverKey = it },
+                                notice = notice.takeIf { isToday },
+                                onOpenMenu = onOpenMenu,
+                                onLogWithClaude = { prompt ->
+                                    copyLogPrompt(context, prompt)
+                                    openClaude(context, prompt)
+                                    notice = "Prompt copied. Paste it into Claude when it opens."
+                                },
+                            )
+                        }
+                    }
                 }
             }
         }
+
+        // A quiet, earned flourish when a refresh brings genuinely better news. One-shot, no streaks.
+        CelebrationOverlay(
+            event = celebration,
+            onDone = { celebration = null },
+            modifier = Modifier.fillMaxSize(),
+        )
     }
+}
+
+/** Ranks a lever/day status so we can tell when a refresh has moved something into a better tier. */
+private fun statusRank(status: String): Int = when (status) {
+    "optimal" -> 3
+    "good" -> 2
+    "fair" -> 1
+    else -> 0
+}
+
+/**
+ * Returns a short congratulatory line when the refreshed data is genuinely better than what was on
+ * screen — a lever crossing up into a strong tier, or a clear jump in the day score — and null
+ * otherwise. This is the gate that keeps the celebration honest: no message, no flourish.
+ */
+private fun improvementMessage(old: HomeSummary, new: HomeSummary): String? {
+    new.levers.forEach { lever ->
+        val prev = old.levers.firstOrNull { it.key == lever.key } ?: return@forEach
+        if (statusRank(lever.status) > statusRank(prev.status) && statusRank(lever.status) >= 2) {
+            return "${lever.title} · ${lever.label}"
+        }
+    }
+    if (new.overall.score >= old.overall.score + 3 && statusRank(new.overall.status) >= 2) {
+        return "Day score up to ${new.overall.score}"
+    }
+    return null
 }
 
 private suspend fun fetchDay(
@@ -179,70 +281,121 @@ private suspend fun fetchDay(
     }
 }
 
+/**
+ * Day switcher as a horizontally scrollable tab strip. The selected day leads — full ink weight with a
+ * short accent underline that slides between tabs — while the rest recede to muted, so the active day
+ * is unmistakable without any chevrons. Tapping a tab animates the pager to that day, and the strip
+ * keeps the selection in view whether it changed by tap or by swipe. Today sits at the trailing (right)
+ * end, matching the pager where swiping right reveals older days.
+ */
 @Composable
-private fun HomeTopBar(
-    date: LocalDate,
+private fun HomeDayTabs(
     today: LocalDate,
-    canGoOlder: Boolean,
-    canGoNewer: Boolean,
-    onOlder: () -> Unit,
-    onNewer: () -> Unit,
-    onOpenMenu: () -> Unit,
+    currentPage: Int,
+    pageCount: Int,
+    dateForPage: (Int) -> LocalDate,
+    onSelectPage: (Int) -> Unit,
 ) {
-    Row(
+    val listState = rememberLazyListState()
+    var initialized by remember { mutableStateOf(false) }
+
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxWidth()
             .padding(bottom = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
     ) {
-        // Ghost variant: the day-switch arrows recede so the date + content lead.
-        IconButton(
-            icon = AppIconKind.BACK,
-            onClick = onOlder,
-            enabled = canGoOlder,
-            ghost = true,
-            contentDescription = "Previous day",
-        )
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .padding(horizontal = 10.dp),
+        // Half-viewport padding on each end lets even the first and last day scroll all the way to
+        // the middle, so the active tab always settles dead-centre.
+        val sidePadding = maxWidth / 2
+
+        LaunchedEffect(currentPage) {
+            // Instant on the very first pass (avoids a long scroll-across on open); animated after.
+            centerTabOn(listState, currentPage, animate = initialized)
+            initialized = true
+        }
+
+        LazyRow(
+            state = listState,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            contentPadding = PaddingValues(horizontal = sidePadding),
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                AppIcon(
-                    icon = AppIconKind.CALENDAR,
-                    tint = HealthTheme.colors.muted,
-                    modifier = Modifier
-                        .padding(end = 6.dp)
-                        .size(18.dp),
-                )
-                AppText(
-                    text = dayLabel(date, today),
-                    style = HealthTheme.type.title,
-                    color = HealthTheme.colors.ink,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+            items(pageCount) { page ->
+                DayTab(
+                    label = dayLabel(dateForPage(page), today),
+                    selected = page == currentPage,
+                    onClick = { onSelectPage(page) },
                 )
             }
-            AppText(
-                text = if (date == today) "Today's overview" else "Full-day recap",
-                style = HealthTheme.type.small,
-                color = HealthTheme.colors.muted,
-                maxLines = 1,
-            )
         }
-        IconButton(
-            icon = AppIconKind.CHEVRON,
-            onClick = onNewer,
-            enabled = canGoNewer,
-            ghost = true,
-            contentDescription = "Next day",
+    }
+}
+
+/**
+ * Scrolls [state] so the tab at [index] sits in the horizontal centre of the strip. Reads the item's
+ * measured offset/size to land it precisely regardless of varying label widths; if the tab isn't laid
+ * out yet it is first brought into view, then centred.
+ */
+private suspend fun centerTabOn(state: LazyListState, index: Int, animate: Boolean) {
+    fun centeringDelta(): Float? {
+        val info = state.layoutInfo
+        val item = info.visibleItemsInfo.firstOrNull { it.index == index } ?: return null
+        val viewportCenter = (info.viewportStartOffset + info.viewportEndOffset) / 2f
+        return (item.offset + item.size / 2f) - viewportCenter
+    }
+
+    var delta = centeringDelta()
+    if (delta == null) {
+        // Not measured yet — jump near it so it becomes visible, then compute the exact offset.
+        if (animate) state.animateScrollToItem(index) else state.scrollToItem(index)
+        delta = centeringDelta() ?: return
+    }
+    if (animate) state.animateScrollBy(delta) else state.scrollBy(delta)
+}
+
+@Composable
+private fun DayTab(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    val colors = HealthTheme.colors
+    val contentColor by animateColorAsState(
+        targetValue = if (selected) colors.ink else colors.muted,
+        animationSpec = tween(durationMillis = Motion.Fast, easing = Motion.EaseOut),
+        label = "day-tab-color",
+    )
+    val underlineWidth by animateDpAsState(
+        targetValue = if (selected) 18.dp else 0.dp,
+        animationSpec = Motion.standardSpring(),
+        label = "day-tab-underline",
+    )
+    val interaction = remember { MutableInteractionSource() }
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier
+            .pressScale(interaction)
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                onClick = onClick,
+            )
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+    ) {
+        AppText(
+            text = label,
+            style = HealthTheme.type.label,
+            color = contentColor,
+            maxLines = 1,
         )
-        IconButton(
-            icon = AppIconKind.MENU,
-            onClick = onOpenMenu,
-            modifier = Modifier.padding(start = 6.dp),
-            contentDescription = "Open menu",
+        Box(
+            modifier = Modifier
+                .padding(top = 5.dp)
+                .height(2.5.dp)
+                .width(underlineWidth)
+                .clip(RoundedCornerShape(999.dp))
+                .background(colors.ink),
         )
     }
 }
@@ -250,38 +403,80 @@ private fun HomeTopBar(
 @Composable
 private fun HomeLoaded(
     summary: HomeSummary,
+    selectedLeverKey: String? = null,
+    onSelectedLeverChange: (String?) -> Unit = {},
     notice: String? = null,
+    onOpenMenu: () -> Unit = {},
     onLogWithClaude: (String) -> Unit = {},
 ) {
-    var selectedLeverKey by remember(summary.date) { mutableStateOf<String?>(null) }
+    val reduced = LocalReducedMotion.current
     val selectedLever = summary.levers.firstOrNull { it.key == selectedLeverKey }
 
-    if (selectedLever != null) {
-        LeverDetailPage(
-            lever = selectedLever,
-            onBack = { selectedLeverKey = null },
-        )
-        return
+    // Opening a lever pushes its detail in from the trailing edge; the back arrow reverses it — the
+    // same "into a detail and back" spatial model as the top-level navigation.
+    AnimatedContent(
+        targetState = selectedLever,
+        transitionSpec = {
+            if (reduced) {
+                fadeIn(tween(Motion.Fast)) togetherWith fadeOut(tween(Motion.Fast))
+            } else {
+                val dir = if (targetState != null) 1 else -1
+                (slideInHorizontally(tween(Motion.Nav, easing = Motion.EaseDrawer)) { dir * it / 3 } +
+                    fadeIn(tween(Motion.Nav))) togetherWith
+                    (slideOutHorizontally(tween(Motion.Nav, easing = Motion.EaseDrawer)) { -dir * it / 6 } +
+                        fadeOut(tween(Motion.Fast)))
+            }
+        },
+        label = "lever-detail",
+        modifier = Modifier.fillMaxSize(),
+    ) { lever ->
+        if (lever != null) {
+            LeverDetailPage(lever = lever, onBack = { onSelectedLeverChange(null) })
+        } else {
+            HomeDailyContent(
+                summary = summary,
+                onSelectedLeverChange = onSelectedLeverChange,
+                notice = notice,
+                onOpenMenu = onOpenMenu,
+                onLogWithClaude = onLogWithClaude,
+            )
+        }
     }
+}
 
+@Composable
+private fun HomeDailyContent(
+    summary: HomeSummary,
+    onSelectedLeverChange: (String?) -> Unit,
+    notice: String?,
+    onOpenMenu: () -> Unit,
+    onLogWithClaude: (String) -> Unit,
+) {
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        WeightHeroCard(weight = summary.weight, objective = summary.objective)
+        WeightHeroCard(
+            weight = summary.weight,
+            objective = summary.objective,
+            modifier = Modifier.enterOnce(0),
+        )
 
-        // Four supporting levers as a light 2x2 grid — neutral cards, accent only on icon + progress.
+        // Supporting levers as a light grid — neutral cards, accent only on icon + progress. Each
+        // tile lifts in a beat after the last so the grid cascades rather than snapping in at once.
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            summary.levers.chunked(2).forEach { rowLevers ->
+            orderedLevers(summary.levers).chunked(2).forEachIndexed { rowIndex, rowLevers ->
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    rowLevers.forEach { lever ->
+                    rowLevers.forEachIndexed { colIndex, lever ->
                         LeverTile(
                             lever = lever,
                             selected = false,
-                            onClick = { selectedLeverKey = lever.key },
-                            modifier = Modifier.weight(1f),
+                            onClick = { onSelectedLeverChange(lever.key) },
+                            modifier = Modifier
+                                .weight(1f)
+                                .enterOnce(1 + rowIndex * 2 + colIndex),
                         )
                     }
                     if (rowLevers.size == 1) Spacer(modifier = Modifier.weight(1f))
@@ -290,15 +485,22 @@ private fun HomeLoaded(
         }
 
         val logTarget = LogTargets.forSummary(summary)
-        HomeActionCard(logTarget = logTarget, onLogWithClaude = onLogWithClaude)
+        HomeActionCard(
+            logTarget = logTarget,
+            onLogWithClaude = onLogWithClaude,
+            modifier = Modifier.enterOnce(1 + summary.levers.size),
+        )
 
         if (notice != null) {
-            AppCard(background = HealthTheme.colors.blueSoft) {
+            AppCard(
+                modifier = Modifier.enterOnce(2 + summary.levers.size),
+                background = HealthTheme.colors.blueSoft,
+            ) {
                 AppText(text = notice, style = HealthTheme.type.body, color = HealthTheme.colors.ink)
             }
         }
 
-        InsightList(insights = summary.insights.take(3))
+        HomeMenuFooter(onOpenMenu = onOpenMenu)
 
         Spacer(modifier = Modifier.height(4.dp))
     }
@@ -309,9 +511,10 @@ private fun HomeLoaded(
 private fun WeightHeroCard(
     weight: HomeWeight,
     objective: String,
+    modifier: Modifier = Modifier,
 ) {
     val statusColor = colorForStatus(weight.status)
-    AppCard(modifier = Modifier.fillMaxWidth(), background = HealthTheme.colors.surface) {
+    AppCard(modifier = modifier.fillMaxWidth(), background = HealthTheme.colors.surface) {
         Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 AppText(text = objective, style = HealthTheme.type.subtitle, modifier = Modifier.weight(1f))
@@ -327,7 +530,10 @@ private fun WeightHeroCard(
                 )
             } else {
                 Row(verticalAlignment = Alignment.Bottom) {
-                    AppText(text = fmt1(weight.current), style = HealthTheme.type.display)
+                    // The hero figure eases to any new weigh-in rather than snapping (change-only —
+                    // a bodyweight rolling up from zero would read as a gimmick).
+                    val shownWeight by animatedNumber(weight.current.toFloat())
+                    AppText(text = fmt1(shownWeight.toDouble()), style = HealthTheme.type.display)
                     AppText(
                         text = " ${weight.unit}",
                         style = HealthTheme.type.subtitle,
@@ -336,8 +542,9 @@ private fun WeightHeroCard(
                     )
                     Spacer(modifier = Modifier.weight(1f))
                     if (weight.bodyFatPct != null) {
+                        val shownBodyFat by animatedNumber(weight.bodyFatPct.toFloat())
                         Column(horizontalAlignment = Alignment.End) {
-                            AppText(text = "${fmt1(weight.bodyFatPct)}%", style = HealthTheme.type.subtitle)
+                            AppText(text = "${fmt1(shownBodyFat.toDouble())}%", style = HealthTheme.type.subtitle)
                             AppText(text = "body fat", style = HealthTheme.type.small, color = HealthTheme.colors.muted)
                         }
                     }
@@ -385,18 +592,29 @@ private fun LeverTile(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val effectiveScore = effectiveLeverScore(lever)
+    val effectiveStatus = effectiveLeverStatus(lever)
     val animatedProgress by animateFloatAsState(
-        targetValue = lever.score.coerceIn(0, 100) / 100f,
+        targetValue = effectiveScore / 100f,
         animationSpec = tween(durationMillis = 500),
         label = "${lever.key}-score",
     )
-    val statusColor = colorForStatus(lever.status)
-    val (big, sub) = leverDisplay(lever)
+    val statusColor = colorForStatus(effectiveStatus)
+    // Tally values roll up as the tile arrives — the progress bar and figure fill together.
+    val shownValue by countUpNumber(lever.value.toFloat())
+    val big = formatLeverBig(lever, shownValue.roundToInt())
+    val sub = leverSub(lever)
+    val interaction = remember { MutableInteractionSource() }
 
     AppCard(
         modifier = modifier
             .aspectRatio(1.12f)
-            .clickable(onClick = onClick),
+            .pressScale(interaction)
+            .clickable(
+                interactionSource = interaction,
+                indication = LocalIndication.current,
+                onClick = onClick,
+            ),
         background = HealthTheme.colors.surface,
         border = if (selected) statusColor else HealthTheme.colors.border,
     ) {
@@ -429,7 +647,7 @@ private fun LeverTile(
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 AppText(
                     text = big,
-                    style = HealthTheme.type.title.copy(fontWeight = FontWeight.Black),
+                    style = HealthTheme.type.title,
                     maxLines = 1,
                 )
                 AppText(text = sub, style = HealthTheme.type.small, color = HealthTheme.colors.muted, maxLines = 1)
@@ -445,9 +663,19 @@ private fun LeverDetailPage(
     lever: HomeLever,
     onBack: () -> Unit,
 ) {
-    val statusColor = colorForStatus(lever.status)
+    val effectiveScore = effectiveLeverScore(lever)
+    val effectiveLabel = effectiveLeverLabel(lever)
+    val effectiveStatus = effectiveLeverStatus(lever)
+    val statusColor = colorForStatus(effectiveStatus)
     val lineItems = lever.lineItems.ifEmpty { fallbackLineItems(lever) }
-    val (big, sub) = leverDisplay(lever)
+    // Headline figure and score roll up as the detail pushes in, mirroring the tiles.
+    val shownValue by countUpNumber(lever.value.toFloat())
+    val big = formatLeverBig(lever, shownValue.roundToInt())
+    val sub = leverSub(lever)
+    val targetScore = forecastProgressScore(lever) ?: effectiveScore
+    val progressStatus = forecastProgressStatus(lever) ?: effectiveStatus
+    val progressColor = colorForStatus(progressStatus)
+    val shownScore by countUpNumber(targetScore.toFloat())
 
     Column(
         modifier = Modifier
@@ -475,7 +703,7 @@ private fun LeverDetailPage(
                     maxLines = 1,
                 )
             }
-            AppText(text = lever.label, style = HealthTheme.type.label, color = statusColor, maxLines = 1)
+            AppText(text = effectiveLabel, style = HealthTheme.type.label, color = statusColor, maxLines = 1)
         }
 
         AppCard(modifier = Modifier.fillMaxWidth(), background = HealthTheme.colors.surface) {
@@ -500,40 +728,139 @@ private fun LeverDetailPage(
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     AppText(
-                        text = "Progress",
+                        text = progressLabel(lever),
                         style = HealthTheme.type.label,
                         color = HealthTheme.colors.muted,
                         modifier = Modifier.weight(1f),
                     )
                     AppText(
-                        text = "${lever.score.coerceIn(0, 100)}%",
+                        text = progressValueLabel(lever, shownScore.roundToInt()),
                         style = HealthTheme.type.label,
-                        color = statusColor,
+                        color = progressColor,
                         maxLines = 1,
                     )
                 }
                 ProgressBar(
-                    progress = lever.score.coerceIn(0, 100) / 100f,
-                    color = statusColor,
+                    progress = shownScore / 100f,
+                    color = progressColor,
                 )
             }
         }
 
-        AppCard(
-            modifier = Modifier.fillMaxWidth(),
-            background = HealthTheme.colors.surface,
-            border = HealthTheme.colors.border,
-        ) {
-            val groupedLineItems = groupLineItemsByTime(lineItems)
-            val showTimeColumn = groupedLineItems.any { !it.time.isNullOrBlank() }
-            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                groupedLineItems.forEach { group ->
-                    LeverLineItemGroupRows(group = group, showTimeColumn = showTimeColumn)
+        if (lever.action.isNotBlank()) {
+            AppCard(
+                modifier = Modifier.fillMaxWidth(),
+                background = HealthTheme.colors.surfaceStrong,
+                border = HealthTheme.colors.border,
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    AppIcon(
+                        icon = AppIconKind.INSIGHT,
+                        tint = statusColor,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    AppText(
+                        text = lever.action,
+                        style = HealthTheme.type.body,
+                        color = HealthTheme.colors.ink,
+                        modifier = Modifier.weight(1f),
+                    )
                 }
             }
         }
 
+        if (lever.key == "energy_balance") {
+            // Intake (food) keeps its by-meal grouping with timestamps; burns (active + basal) get
+            // their own section with no time column — a basal estimate has no clock time to show.
+            val (burned, intake) = lineItems.partition { calorieAmount(it.value) < 0 }
+            LineItemsCard(items = intake)
+            LineItemsCard(items = burned, showTime = false)
+            CalorieTotalsCard(lineItems = lineItems)
+        } else {
+            LineItemsCard(items = lineItems)
+        }
+
         Spacer(modifier = Modifier.height(4.dp))
+    }
+}
+
+/**
+ * A card of line items. By default it groups by time (with per-meal subtotals); [showTime] = false
+ * renders a flat, time-less list — used for burns, where a basal estimate has no timestamp. An
+ * optional [title] heads the section.
+ */
+@Composable
+private fun LineItemsCard(
+    items: List<HomeLeverLineItem>,
+    title: String? = null,
+    showTime: Boolean = true,
+) {
+    if (items.isEmpty()) return
+    AppCard(
+        modifier = Modifier.fillMaxWidth(),
+        background = HealthTheme.colors.surface,
+        border = HealthTheme.colors.border,
+    ) {
+        val groups = if (showTime) {
+            groupLineItemsByTime(items)
+        } else {
+            listOf(LineItemTimeGroup(time = null, items = items))
+        }
+        val showTimeColumn = showTime && groups.any { !it.time.isNullOrBlank() }
+        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            if (title != null) {
+                AppText(text = title, style = HealthTheme.type.subtitle)
+            }
+            groups.forEach { group ->
+                LeverLineItemGroupRows(group = group, showTimeColumn = showTimeColumn)
+            }
+        }
+    }
+}
+
+@Composable
+private fun CalorieTotalsCard(lineItems: List<HomeLeverLineItem>) {
+    val gained = lineItems.sumOf { item -> calorieAmount(item.value).coerceAtLeast(0) }
+    val lost = lineItems.sumOf { item -> -calorieAmount(item.value).coerceAtMost(0) }
+    val net = gained - lost
+
+    // The totals tally up as the card arrives; colour tracks the final net, not the animated value.
+    val shownGained by countUpNumber(gained.toFloat())
+    val shownLost by countUpNumber(lost.toFloat())
+    val shownNet by countUpNumber(net.toFloat())
+
+    AppCard(
+        modifier = Modifier.fillMaxWidth(),
+        background = HealthTheme.colors.surfaceStrong,
+        border = HealthTheme.colors.border,
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            AppText(text = "Calorie totals", style = HealthTheme.type.subtitle)
+            CalorieTotalRow(label = "Gained", value = grouped(shownGained.roundToInt()), color = HealthTheme.colors.ink)
+            CalorieTotalRow(label = "Lost", value = grouped(shownLost.roundToInt()), color = HealthTheme.colors.ink)
+            CalorieTotalRow(label = "Net", value = signedKcal(shownNet.roundToInt()), color = colorForBalance(net))
+        }
+    }
+}
+
+@Composable
+private fun CalorieTotalRow(
+    label: String,
+    value: String,
+    color: Color,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        AppText(
+            text = label,
+            style = HealthTheme.type.body,
+            color = HealthTheme.colors.muted,
+            modifier = Modifier.weight(1f),
+        )
+        AppText(text = "$value kcal", style = HealthTheme.type.label, color = color, maxLines = 1)
     }
 }
 
@@ -564,6 +891,57 @@ private fun LeverLineItemGroupRows(
             group.items.forEach { item ->
                 LeverLineItemRow(item = item)
             }
+            // A per-meal tally: only when the group genuinely sums more than one line, and only for
+            // the figures we can parse (calories / protein) — steps-style groups get no subtotal.
+            if (group.items.size > 1) {
+                val totals = mealTotal(group.items)
+                mealTotalLabel(totals)?.let { label ->
+                    MealTotalRow(text = label, rating = mealRating(totals))
+                }
+            }
+        }
+    }
+}
+
+/**
+ * A subtle divider + right-aligned tally that closes out a time group's line items. A [rating] adds
+ * a small leading icon — a star for a protein-dense meal, a cookie for a poor calorie/protein
+ * trade-off; an OK (or unrated) meal shows no icon.
+ */
+@Composable
+private fun MealTotalRow(text: String, rating: MealRating?) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(1.dp)
+                .background(HealthTheme.colors.border),
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.End,
+        ) {
+            val icon = when (rating) {
+                MealRating.GREAT -> AppIconKind.STAR
+                MealRating.NAUGHTY -> AppIconKind.COOKIE
+                else -> null
+            }
+            if (icon != null) {
+                AppIcon(
+                    icon = icon,
+                    tint = if (rating == MealRating.GREAT) HealthTheme.colors.primary else HealthTheme.colors.red,
+                    modifier = Modifier
+                        .padding(end = 6.dp)
+                        .size(15.dp),
+                )
+            }
+            AppText(
+                text = text,
+                style = HealthTheme.type.label,
+                color = HealthTheme.colors.ink,
+                maxLines = 1,
+            )
         }
     }
 }
@@ -664,6 +1042,7 @@ private fun axisDateLabel(date: String): String =
 private fun HomeActionCard(
     logTarget: LogTarget?,
     onLogWithClaude: (String) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val statusColor = if (logTarget == null) HealthTheme.colors.primary else HealthTheme.colors.yellow
     val title = logTarget?.heading ?: "Home action"
@@ -676,7 +1055,7 @@ private fun HomeActionCard(
     }
 
     AppCard(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
         background = HealthTheme.colors.surface,
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -718,44 +1097,22 @@ private fun HomeActionCard(
 }
 
 @Composable
-private fun InsightList(insights: List<String>) {
-    AppCard(modifier = Modifier.fillMaxWidth(), background = HealthTheme.colors.surfaceStrong) {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                AppIcon(
-                    icon = AppIconKind.INSIGHT,
-                    tint = HealthTheme.colors.yellow,
-                    modifier = Modifier.size(20.dp),
-                )
-                AppText(text = "Notes", style = HealthTheme.type.subtitle)
-            }
-            if (insights.isEmpty()) {
-                AppText(text = "No notes yet. Sync again after new data lands.", color = HealthTheme.colors.muted)
-            } else {
-                insights.forEach { insight ->
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        verticalAlignment = Alignment.Top,
-                    ) {
-                        AppIcon(
-                            icon = AppIconKind.TREND,
-                            tint = HealthTheme.colors.primary,
-                            modifier = Modifier
-                                .padding(top = 2.dp)
-                                .size(18.dp),
-                        )
-                        AppText(text = insight, modifier = Modifier.weight(1f))
-                    }
-                }
-            }
-        }
+private fun HomeMenuFooter(onOpenMenu: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.End,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconButton(
+            icon = AppIconKind.MENU,
+            onClick = onOpenMenu,
+            ghost = true,
+            contentDescription = "Open menu",
+        )
     }
 }
 
-/** Skeleton that mirrors the loaded layout (weight hero, 2x2 lever grid, action card). */
+/** Skeleton that mirrors the loaded layout (weight hero, three lever cards, action card). */
 @Composable
 private fun HomeSkeleton() {
     Column(
@@ -782,26 +1139,7 @@ private fun HomeSkeleton() {
             repeat(2) {
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     repeat(2) {
-                        AppCard(
-                            modifier = Modifier
-                                .weight(1f)
-                                .aspectRatio(1.12f),
-                        ) {
-                            Column(
-                                modifier = Modifier.fillMaxSize(),
-                                verticalArrangement = Arrangement.SpaceBetween,
-                            ) {
-                                SkeletonBox(modifier = Modifier
-                                    .fillMaxWidth(0.6f)
-                                    .height(18.dp))
-                                SkeletonBox(modifier = Modifier
-                                    .fillMaxWidth(0.5f)
-                                    .height(24.dp))
-                                SkeletonBox(modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(12.dp))
-                            }
-                        }
+                        SkeletonLeverCard(modifier = Modifier.weight(1f))
                     }
                 }
             }
@@ -827,6 +1165,28 @@ private fun HomeSkeleton() {
                     .fillMaxWidth()
                     .height(52.dp), shape = RoundedCornerShape(14.dp))
             }
+        }
+    }
+}
+
+@Composable
+private fun SkeletonLeverCard(modifier: Modifier = Modifier) {
+    AppCard(
+        modifier = modifier.aspectRatio(1.12f),
+    ) {
+        Column(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.SpaceBetween,
+        ) {
+            SkeletonBox(modifier = Modifier
+                .fillMaxWidth(0.6f)
+                .height(18.dp))
+            SkeletonBox(modifier = Modifier
+                .fillMaxWidth(0.5f)
+                .height(24.dp))
+            SkeletonBox(modifier = Modifier
+                .fillMaxWidth()
+                .height(12.dp))
         }
     }
 }
@@ -901,17 +1261,42 @@ private fun CenterMessage(
 
 // --- Presentation helpers ----------------------------------------------------
 
+/**
+ * Fixed display order for the supporting-lever grid, independent of the order the server returns:
+ * calorie balance leads (the day's headline lever), then protein, training, steps. Any lever whose
+ * key isn't listed keeps its original relative position after the known ones.
+ */
+private val LEVER_ORDER = listOf("energy_balance", "protein", "training", "steps")
+
+private fun orderedLevers(levers: List<HomeLever>): List<HomeLever> =
+    levers.sortedBy { lever ->
+        LEVER_ORDER.indexOf(lever.key).let { if (it == -1) LEVER_ORDER.size + levers.indexOf(lever) else it }
+    }
+
 /** Big value + goal-context sub-line for each lever tile, derived from the structured fields. */
-private fun leverDisplay(lever: HomeLever): Pair<String, String> {
-    val v = lever.value.roundToInt()
+private fun leverDisplay(lever: HomeLever): Pair<String, String> =
+    formatLeverBig(lever, lever.value.roundToInt()) to leverSub(lever)
+
+/** Formats the lever's headline figure for an arbitrary [v], so a count-up can reuse the formatting. */
+private fun formatLeverBig(lever: HomeLever, v: Int): String = when (lever.key) {
+    "protein" -> "${v}g"
+    "steps" -> grouped(v)
+    "training" -> "$v"
+    "energy_balance" -> signedKcal(v)
+    "energy" -> grouped(v)
+    else -> "$v"
+}
+
+/** The goal-context sub-line that sits under a lever's headline figure. */
+private fun leverSub(lever: HomeLever): String {
     val g = lever.goal?.roundToInt()
     return when (lever.key) {
-        "protein" -> "${v}g" to (g?.let { "Goal $it g" } ?: "protein")
-        "steps" -> grouped(v) to (g?.let { "Goal ${grouped(it)}" } ?: "steps")
-        "training" -> "$v" to (g?.let { "Goal $it · this week" } ?: "this week")
-        "energy_balance" -> signedKcal(v) to (g?.let { "Target ${signedKcal(it)} kcal" } ?: "Needs weight")
-        "energy" -> grouped(v) to (g?.let { "Goal ${grouped(it)} kcal" } ?: "kcal")
-        else -> "$v" to (g?.let { "Goal $it" } ?: "")
+        "protein" -> g?.let { "Goal $it g" } ?: "protein"
+        "steps" -> g?.let { "Goal ${grouped(it)}" } ?: "steps"
+        "training" -> g?.let { "Goal $it · this week" } ?: "this week"
+        "energy_balance" -> g?.let { "Target ${signedKcal(it)} kcal" } ?: "Needs weight"
+        "energy" -> g?.let { "Goal ${grouped(it)} kcal" } ?: "kcal"
+        else -> g?.let { "Goal $it" } ?: ""
     }
 }
 
@@ -964,6 +1349,89 @@ private fun signedKcal(n: Int): String = when {
     else -> "0"
 }
 
+private fun calorieAmount(value: String): Int {
+    val match = Regex("""([+\-−])\s*([0-9][0-9,]*)\s*kcal""").find(value) ?: return 0
+    val amount = match.groupValues[2].replace(",", "").toIntOrNull() ?: return 0
+    return if (match.groupValues[1] == "+") amount else -amount
+}
+
+/** Running tally for a time group, tracking which figures were present so we only render real sums. */
+private data class MealTotal(
+    val kcal: Int,
+    val proteinGrams: Double,
+    val hasKcal: Boolean,
+    val hasProtein: Boolean,
+    val kcalSigned: Boolean,
+)
+
+// kcal accepts an optional sign (protein rows read "278 kcal", energy rows read "+278 kcal"); protein
+// grams are a number immediately before a "g" token ("17.3g", "17.3 g protein").
+private val KCAL_REGEX = Regex("""([+\-−]?)\s*([0-9][0-9,]*)\s*kcal""")
+private val PROTEIN_GRAMS_REGEX = Regex("""([0-9]+(?:\.[0-9]+)?)\s*g\b""")
+
+/** Parses and sums the calories and protein grams across a time group's line-item value strings. */
+private fun mealTotal(items: List<HomeLeverLineItem>): MealTotal {
+    var kcal = 0
+    var proteinGrams = 0.0
+    var hasKcal = false
+    var hasProtein = false
+    var kcalSigned = false
+    items.forEach { item ->
+        KCAL_REGEX.find(item.value)?.let { m ->
+            val amount = m.groupValues[2].replace(",", "").toIntOrNull() ?: 0
+            val sign = m.groupValues[1]
+            kcal += if (sign == "-" || sign == "−") -amount else amount
+            if (sign.isNotBlank()) kcalSigned = true
+            hasKcal = true
+        }
+        PROTEIN_GRAMS_REGEX.find(item.value)?.let { m ->
+            proteinGrams += m.groupValues[1].toDoubleOrNull() ?: 0.0
+            hasProtein = true
+        }
+    }
+    return MealTotal(kcal, proteinGrams, hasKcal, hasProtein, kcalSigned)
+}
+
+/**
+ * How well a meal traded calories for protein. GREAT = protein-dense, NAUGHTY = a poor trade-off
+ * (lots of calories, little protein), OK = unremarkable (no icon). Judged on protein's share of the
+ * meal's calories (protein is 4 kcal/g): ≥30% is great, <20% is naughty.
+ */
+private enum class MealRating { GREAT, OK, NAUGHTY }
+
+/** Minimum calories before we pass judgement — a lone banana or black coffee isn't a "meal". */
+private const val MEAL_JUDGE_MIN_KCAL = 150
+
+private fun mealRating(total: MealTotal): MealRating? {
+    if (!total.hasKcal || !total.hasProtein) return null
+    if (total.kcal < MEAL_JUDGE_MIN_KCAL) return null
+    val proteinShare = (total.proteinGrams * 4.0) / total.kcal
+    return when {
+        proteinShare >= 0.30 -> MealRating.GREAT
+        proteinShare < 0.20 -> MealRating.NAUGHTY
+        else -> MealRating.OK
+    }
+}
+
+/** Formats a [MealTotal] as a sub-line ("+445 kcal · 25.4g protein"), or null when nothing summed. */
+private fun mealTotalLabel(total: MealTotal): String? {
+    val parts = mutableListOf<String>()
+    if (total.hasKcal) {
+        parts += if (total.kcalSigned) "${signedKcal(total.kcal)} kcal" else "${grouped(total.kcal)} kcal"
+    }
+    if (total.hasProtein && total.proteinGrams > 0.0) {
+        parts += "${fmt1(total.proteinGrams)}g protein"
+    }
+    return parts.takeIf { it.isNotEmpty() }?.joinToString(" · ")
+}
+
+@Composable
+private fun colorForBalance(value: Int): Color = when {
+    value < 0 -> HealthTheme.colors.primary
+    value > 0 -> HealthTheme.colors.yellow
+    else -> HealthTheme.colors.muted
+}
+
 private fun fmt1(d: Double): String = String.format(Locale.US, "%.1f", d)
 
 /** kg/week change, formatted with an explicit sign; "Trend forming" when there's no fit yet. */
@@ -993,6 +1461,64 @@ private fun iconForLever(key: String): AppIconKind = when (key) {
     "energy_balance" -> AppIconKind.FLAME
     "energy" -> AppIconKind.FLAME
     else -> AppIconKind.TREND
+}
+
+private fun scoreStatus(score: Int): String = when {
+    score >= 85 -> "optimal"
+    score >= 70 -> "good"
+    score >= 55 -> "fair"
+    else -> "attention"
+}
+
+private fun normalizedEnergyScore(lever: HomeLever): Int? {
+    if (lever.key != "energy_balance") return null
+    val goal = lever.goal ?: return null
+    val value = lever.value
+    val score = when {
+        goal < 0.0 -> (maxOf(0.0, -value) / maxOf(1.0, kotlin.math.abs(goal))) * 100.0
+        goal > 0.0 -> (maxOf(0.0, value) / maxOf(1.0, kotlin.math.abs(goal))) * 100.0
+        else -> 100.0 - (kotlin.math.abs(value - goal) / 125.0) * 30.0
+    }
+    return score.roundToInt().coerceIn(0, 100)
+}
+
+private fun effectiveLeverScore(lever: HomeLever): Int =
+    normalizedEnergyScore(lever) ?: lever.score.coerceIn(0, 100)
+
+private fun effectiveLeverStatus(lever: HomeLever): String =
+    normalizedEnergyScore(lever)?.let(::scoreStatus) ?: lever.status
+
+private fun effectiveLeverLabel(lever: HomeLever): String {
+    if (lever.key != "energy_balance") return lever.label
+    val goal = lever.goal ?: return lever.label
+    val score = effectiveLeverScore(lever)
+    return when {
+        goal < 0.0 && lever.value <= goal -> "Deficit met"
+        goal < 0.0 -> if (score >= 70) "Near target" else "Deficit short"
+        goal > 0.0 && lever.value >= goal -> "Surplus met"
+        goal > 0.0 -> if (score >= 70) "Near target" else "Surplus short"
+        kotlin.math.abs(lever.value - goal) <= 125.0 -> "Balanced"
+        lever.value < 0.0 -> "Deficit"
+        else -> "Surplus"
+    }
+}
+
+private fun forecastProgressScore(lever: HomeLever): Int? =
+    if (lever.key == "energy_balance") lever.forecastScore?.coerceIn(0, 100) else null
+
+private fun forecastProgressStatus(lever: HomeLever): String? =
+    forecastProgressScore(lever)?.let { lever.forecastStatus ?: scoreStatus(it) }
+
+private fun progressLabel(lever: HomeLever): String =
+    if (forecastProgressScore(lever) != null) "Where you'll likely end the day" else "Progress"
+
+private fun progressValueLabel(lever: HomeLever, shownScore: Int): String {
+    val forecastValue = lever.forecastValue
+    return if (forecastProgressScore(lever) != null && forecastValue != null) {
+        "${signedKcal(forecastValue.roundToInt())} · $shownScore%"
+    } else {
+        "$shownScore%"
+    }
 }
 
 @Composable
@@ -1072,18 +1598,28 @@ private fun sampleLeverLineItems(key: String): List<HomeLeverLineItem> {
             HomeLeverLineItem("Protein porridge w/ milk", "17.3g · 278 kcal", "08:00"),
             HomeLeverLineItem("Small low-fat cappuccino", "6.4g · 60 kcal", "08:00"),
             HomeLeverLineItem("Banana", "1.7g · 107 kcal", "08:00"),
+            HomeLeverLineItem("Chicken & rice bowl", "42.1g · 540 kcal", "13:15"),
+            HomeLeverLineItem("Greek yoghurt", "15.0g · 130 kcal", "13:15"),
+            HomeLeverLineItem("Chocolate muffin", "4.2g · 420 kcal", "15:30"),
+            HomeLeverLineItem("Full-fat latte", "8.0g · 190 kcal", "15:30"),
         )
         "training" -> listOf(
             HomeLeverLineItem("Jul 05 · 1 Upper", "35 min · Hevy", "14:23"),
         )
         "steps" -> listOf(
-            HomeLeverLineItem("Oura steps", "1,547 steps", "00:00"),
+            HomeLeverLineItem("Oura steps", "5,140 steps", "06:12"),
+            HomeLeverLineItem("Phone steps", "2,280 steps", "07:45"),
         )
         "energy_balance" -> listOf(
             HomeLeverLineItem("Food · Protein porridge w/ milk", "+278 kcal · 17.3g protein", "08:00"),
             HomeLeverLineItem("Food · Small low-fat cappuccino", "+60 kcal · 6.4g protein", "08:00"),
             HomeLeverLineItem("Food · Banana", "+107 kcal · 1.7g protein", "08:00"),
+            HomeLeverLineItem("Food · Chicken & rice bowl", "+540 kcal · 42.1g protein", "13:15"),
+            HomeLeverLineItem("Food · Greek yoghurt", "+130 kcal · 15.0g protein", "13:15"),
+            HomeLeverLineItem("Food · Chocolate muffin", "+420 kcal · 4.2g protein", "15:30"),
+            HomeLeverLineItem("Food · Full-fat latte", "+190 kcal · 8.0g protein", "15:30"),
             HomeLeverLineItem("Burn · Oura active burn", "-120 kcal", "04:00"),
+            HomeLeverLineItem("Workout · Upper", "-216 kcal", "09:42"),
             HomeLeverLineItem("Basal estimate", "-1,680 kcal"),
         )
         else -> emptyList()
@@ -1091,14 +1627,14 @@ private fun sampleLeverLineItems(key: String): List<HomeLeverLineItem> {
 }
 
 private fun sampleLevers(training: Int = 2): List<HomeLever> = listOf(
+    sampleLever("energy_balance", "Calorie balance", 88, "On pace", "optimal", -320.0, -440.0, "kcal"),
     sampleLever("protein", "Protein", 88, "On track", "optimal", 132.0, 150.0, "g"),
     sampleLever(
         "training", "Training",
         score = training * 25, label = "Halfway", status = if (training >= 3) "good" else "fair",
         value = training.toDouble(), goal = 4.0, unit = "sessions", period = "week",
     ),
-    sampleLever("steps", "Steps", 74, "On pace", "good", 7420.0, 10000.0, null),
-    sampleLever("energy_balance", "Calorie balance", 88, "On target", "optimal", -320.0, -440.0, "kcal"),
+    sampleLever("steps", "Steps", 74, "In progress", "good", 7420.0, 10000.0, null),
 )
 
 private fun sampleSummary(weight: HomeWeight, levers: List<HomeLever>, insights: List<String>): HomeSummary =
@@ -1123,7 +1659,7 @@ private fun PreviewShell(themeMode: ThemeMode, content: @Composable () -> Unit) 
 
 @Preview(name = "Home — on track", showBackground = true, heightDp = 1120, widthDp = 400)
 @Composable
-private fun HomeOnTrackPreview() {
+internal fun HomeOnTrackPreview() {
     PreviewShell(ThemeMode.LIGHT) {
         HomeLoaded(
             summary = sampleSummary(
@@ -1141,7 +1677,7 @@ private fun HomeOnTrackPreview() {
 
 @Preview(name = "Home — stalled", showBackground = true, heightDp = 1120, widthDp = 400)
 @Composable
-private fun HomeStalledPreview() {
+internal fun HomeStalledPreview() {
     PreviewShell(ThemeMode.LIGHT) {
         HomeLoaded(
             summary = sampleSummary(
@@ -1158,7 +1694,7 @@ private fun HomeStalledPreview() {
 
 @Preview(name = "Home — dark", showBackground = true, heightDp = 1120, widthDp = 400)
 @Composable
-private fun HomeDarkPreview() {
+internal fun HomeDarkPreview() {
     PreviewShell(ThemeMode.DARK) {
         HomeLoaded(
             summary = sampleSummary(
@@ -1192,20 +1728,9 @@ private fun TrainingLeverPagePreview() {
     }
 }
 
-@Preview(name = "Lever page — steps", showBackground = true, heightDp = 700, widthDp = 400)
-@Composable
-private fun StepsLeverPagePreview() {
-    PreviewShell(ThemeMode.LIGHT) {
-        LeverDetailPage(
-            lever = sampleLevers(training = 3).first { it.key == "steps" },
-            onBack = {},
-        )
-    }
-}
-
 @Preview(name = "Lever page — calorie balance", showBackground = true, heightDp = 700, widthDp = 400)
 @Composable
-private fun CalorieBalanceLeverPagePreview() {
+internal fun CalorieBalanceLeverPagePreview() {
     PreviewShell(ThemeMode.LIGHT) {
         LeverDetailPage(
             lever = sampleLevers(training = 3).first { it.key == "energy_balance" },

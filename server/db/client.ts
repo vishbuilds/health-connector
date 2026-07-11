@@ -44,9 +44,10 @@ const pgPool = isNeonHost(databaseUrl)
       // Postgres connects without TLS.
       ssl: isLocalDatabaseUrl(databaseUrl) ? undefined : { rejectUnauthorized: false },
       // Supabase's session pooler caps total client connections (pool_size 15). Keep each
-      // instance's pool small enough that concurrent instances don't exhaust the shared
-      // cap. Local Postgres has no such limit but a small pool is harmless there too.
-      max: isLocalDatabaseUrl(databaseUrl) ? 10 : 4,
+      // serverless instance to one client so /api/home's parallel reads queue locally instead of
+      // exhausting the shared session pool across warm Vercel instances.
+      max: isLocalDatabaseUrl(databaseUrl) ? 10 : 1,
+      idleTimeoutMillis: isLocalDatabaseUrl(databaseUrl) ? 30_000 : 5_000,
     });
 
 export const db = neonClient ? drizzleNeon(neonClient, { schema }) : drizzlePg(pgPool!, { schema });

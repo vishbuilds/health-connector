@@ -8,11 +8,17 @@ import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -30,7 +36,10 @@ import com.vishaal.healthconnector.ui.MenuScreen
 import com.vishaal.healthconnector.ui.SetupScreen
 import com.vishaal.healthconnector.ui.theme.AppSurface
 import com.vishaal.healthconnector.ui.theme.HealthConnectorTheme
+import com.vishaal.healthconnector.ui.theme.LocalReducedMotion
+import com.vishaal.healthconnector.ui.theme.Motion
 import com.vishaal.healthconnector.ui.theme.ThemeMode
+import com.vishaal.healthconnector.ui.theme.rememberSystemReducedMotion
 
 private object Routes {
     const val HOME = "home"
@@ -67,9 +76,11 @@ class MainActivity : ComponentActivity() {
                     isAppearanceLightNavigationBars = !darkTheme
                 }
             }
-            HealthConnectorTheme(themeMode = themeMode) {
-                AppSurface {
-                    HealthConnectorApp()
+            CompositionLocalProvider(LocalReducedMotion provides rememberSystemReducedMotion()) {
+                HealthConnectorTheme(themeMode = themeMode) {
+                    AppSurface {
+                        HealthConnectorApp()
+                    }
                 }
             }
         }
@@ -97,6 +108,13 @@ class MainActivity : ComponentActivity() {
 private fun HealthConnectorApp() {
     val navController = rememberNavController()
     val context = androidx.compose.ui.platform.LocalContext.current
+    val reduced = LocalReducedMotion.current
+
+    // Screen-to-screen motion: the incoming screen slides in from the trailing edge over an
+    // iOS-drawer curve while the outgoing one eases back a touch and dims — a clear sense of moving
+    // forward into a detail, reversed on the way back. Reduced motion collapses this to a cross-fade.
+    val navTween = tween<Float>(durationMillis = Motion.Nav, easing = Motion.EaseDrawer)
+    val slideTween = tween<androidx.compose.ui.unit.IntOffset>(durationMillis = Motion.Nav, easing = Motion.EaseDrawer)
 
     NavHost(
         navController = navController,
@@ -105,6 +123,22 @@ private fun HealthConnectorApp() {
             .fillMaxSize()
             .statusBarsPadding()
             .navigationBarsPadding(),
+        enterTransition = {
+            if (reduced) fadeIn(navTween)
+            else fadeIn(navTween) + slideInHorizontally(slideTween) { it / 3 }
+        },
+        exitTransition = {
+            if (reduced) fadeOut(navTween)
+            else fadeOut(navTween) + slideOutHorizontally(slideTween) { -it / 6 }
+        },
+        popEnterTransition = {
+            if (reduced) fadeIn(navTween)
+            else fadeIn(navTween) + slideInHorizontally(slideTween) { -it / 6 }
+        },
+        popExitTransition = {
+            if (reduced) fadeOut(navTween)
+            else fadeOut(navTween) + slideOutHorizontally(slideTween) { it / 3 }
+        },
     ) {
         composable(Routes.HOME) {
             HomeScreen(onOpenMenu = { navController.navigateSingleTop(Routes.MENU) })

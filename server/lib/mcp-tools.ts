@@ -25,7 +25,7 @@ const DATA_SHAPES: Record<string, string> = {
   StepsRecord: "{ count: number }",
   DistanceRecord: "{ distanceMeters: number }",
   ActiveCaloriesBurnedRecord: "{ energyKcal: number }",
-  TotalCaloriesBurnedRecord: "{ energyKcal: number } (raw interval burn; do not assume one row or source is a full-day total)",
+  TotalCaloriesBurnedRecord: "{ energyKcal: number } (per-interval burn; Hevy writes one row per strength workout — count these toward expenditure. Still not a full-day feed: don't treat a single row or source as the whole day's total)",
   FloorsClimbedRecord: "{ floors: number }",
   HydrationRecord: "{ volumeLiters: number }",
   SleepSessionRecord: "{ title?, notes?, stages: [...] } (duration = end_time - start_time)",
@@ -148,10 +148,13 @@ Conventions:
         GROUP BY source_app
       ) t;
     (Single-source days are unaffected. Skip the dedup when you specifically want per-source rows.)
-  - IMPORTANT for calories: TotalCaloriesBurnedRecord rows are raw Health Connect interval records,
-    not a guaranteed full-day expenditure feed. Do not use them as "today's total calories burned"
-    unless you first inspect the source and interval coverage. For daily calorie balance, prefer
-    active burn from ActiveCaloriesBurnedRecord plus basal burn from get_health_profile.
+  - IMPORTANT for calories: TotalCaloriesBurnedRecord rows are per-interval, not a guaranteed
+    full-day expenditure feed, so don't treat a single row or source as "today's total calories
+    burned". But Hevy logs each strength workout as a TotalCaloriesBurnedRecord scoped to that
+    session, and wearable active-calorie feeds barely register lifting — that burn is real
+    expenditure. For daily calorie balance use active burn (ActiveCaloriesBurnedRecord) PLUS workout
+    burn (TotalCaloriesBurnedRecord) PLUS basal burn from get_health_profile. De-duplicate each by
+    source_app (sum per source, take the max), then add the three together.
 
 Limits: one statement only; runs READ ONLY (writes are impossible); aborted after ${
   READ_ONLY_LIMITS.statementTimeoutMs / 1000
@@ -900,8 +903,9 @@ function registerPrompts(server: McpServer) {
           "are included, grouping by " +
           `(start_time AT TIME ZONE '${USER_TIMEZONE}')::date. Report steps, distance, active calories, estimated total burn, ` +
           "floors climbed, hydration, sleep duration, resting heart rate, exercise sessions, and latest weight " +
-          "as of that day. Estimate total burn as active calories plus basal burn from get_health_profile; " +
-          "do not treat raw TotalCaloriesBurnedRecord intervals as the full-day total unless their coverage proves it. " +
+          "as of that day. Estimate total burn as active calories plus per-workout burn (Hevy's " +
+          "TotalCaloriesBurnedRecord) plus basal burn from get_health_profile; a single " +
+          "TotalCaloriesBurnedRecord row or source is still not the full-day total. " +
           "De-duplicate summed metrics by source_app (sum per source, take the max). " +
           "Consult health://data-shapes for the jsonb field names.",
       ),

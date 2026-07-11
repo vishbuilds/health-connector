@@ -11,6 +11,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -37,6 +38,7 @@ import androidx.compose.material.icons.rounded.CalendarToday
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ChevronLeft
 import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.Cookie
 import androidx.compose.material.icons.rounded.FitnessCenter
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.Lightbulb
@@ -44,6 +46,7 @@ import androidx.compose.material.icons.rounded.LocalFireDepartment
 import androidx.compose.material.icons.rounded.MonitorHeart
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.RestaurantMenu
+import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.TrendingDown
 import androidx.compose.material.icons.rounded.TrendingFlat
 import androidx.compose.material.icons.rounded.WaterDrop
@@ -70,9 +73,14 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.text.ExperimentalTextApi
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontVariation
 import androidx.compose.ui.text.font.FontWeight
+import com.vishaal.healthconnector.R
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -110,6 +118,8 @@ data class AppColors(
     val redSoft: Color,
     val border: Color,
     val shadow: Color,
+    /** Translucent top-edge highlight painted over cards to read as frosted glass. */
+    val sheen: Color,
 )
 
 @Immutable
@@ -122,86 +132,109 @@ data class AppTypography(
     val small: TextStyle,
 )
 
+// Premium, restrained palette. Accents are muted jade / sky / amber / rose — reserved for status and
+// progress, never decoration. Surfaces read as frosted glass over a deep, calm ground.
 private val LightColors = AppColors(
-    background = Color(0xFFF7FAFF),
-    surface = Color.White,
-    surfaceStrong = Color(0xFFEFF6FF),
-    ink = Color(0xFF223041),
-    muted = Color(0xFF647385),
-    primary = Color(0xFF58CC02),
-    primaryDark = Color(0xFF3F9700),
-    primarySoft = Color(0xFFE7F9D9),
-    blue = Color(0xFF1CB0F6),
-    blueSoft = Color(0xFFDDF3FF),
-    yellow = Color(0xFFFFC800),
-    yellowSoft = Color(0xFFFFF4C2),
-    red = Color(0xFFFF4B4B),
-    redSoft = Color(0xFFFFE1E1),
-    border = Color(0xFFD7E1EA),
-    shadow = Color(0x33223041),
+    background = Color(0xFFF1F4F8),
+    surface = Color(0xFFFFFFFF),
+    surfaceStrong = Color(0xFFE9EEF4),
+    ink = Color(0xFF17222E),
+    muted = Color(0xFF5A6B7B),
+    primary = Color(0xFF0FA97C),
+    primaryDark = Color(0xFF0B8763),
+    primarySoft = Color(0xFFDDF1EA),
+    blue = Color(0xFF2F7FE6),
+    blueSoft = Color(0xFFDEEAFB),
+    yellow = Color(0xFFC28A1E),
+    yellowSoft = Color(0xFFF6EACE),
+    red = Color(0xFFDC5266),
+    redSoft = Color(0xFFFADFE3),
+    border = Color(0xFFDFE6EE),
+    shadow = Color(0x14223042),
+    sheen = Color(0x59FFFFFF),
 )
 
 private val DarkColors = AppColors(
-    background = Color(0xFF111A22),
-    surface = Color(0xFF192530),
-    surfaceStrong = Color(0xFF223241),
-    ink = Color(0xFFF0F6FB),
-    muted = Color(0xFFB8C5D0),
-    primary = Color(0xFF76D94B),
-    primaryDark = Color(0xFFB7F58E),
-    primarySoft = Color(0xFF253F24),
-    blue = Color(0xFF55C7FF),
-    blueSoft = Color(0xFF17384E),
-    yellow = Color(0xFFFFD84A),
-    yellowSoft = Color(0xFF453A12),
-    red = Color(0xFFFF7777),
-    redSoft = Color(0xFF4A2429),
-    border = Color(0xFF304454),
-    shadow = Color(0x66000000),
+    background = Color(0xFF090C11),
+    surface = Color(0xFF141A22),
+    surfaceStrong = Color(0xFF1C2530),
+    ink = Color(0xFFEAF1F8),
+    muted = Color(0xFF95A5B6),
+    primary = Color(0xFF4FD1A5),
+    primaryDark = Color(0xFF2FA982),
+    primarySoft = Color(0xFF11342B),
+    blue = Color(0xFF62A8F5),
+    blueSoft = Color(0xFF152A40),
+    yellow = Color(0xFFE6B25C),
+    yellowSoft = Color(0xFF362B14),
+    red = Color(0xFFF07A82),
+    redSoft = Color(0xFF3A1E22),
+    border = Color(0x1FFFFFFF),
+    shadow = Color(0x5C000000),
+    sheen = Color(0x14FFFFFF),
+)
+
+// Hanken Grotesk — a warm humanist grotesque bundled as a variable font. Each entry pins the weight
+// axis so the requested FontWeight renders precisely, in the app and in @Preview. The scale leans on
+// lighter weights (a large, airy display number; medium titles) for a calm, premium read rather than
+// the heavy, chunky feel of a gamified tracker.
+@OptIn(ExperimentalTextApi::class)
+private fun hanken(weight: FontWeight) = Font(
+    R.font.hanken_grotesk,
+    weight = weight,
+    variationSettings = FontVariation.Settings(FontVariation.weight(weight.weight)),
+)
+
+private val HankenGrotesk = FontFamily(
+    hanken(FontWeight.Light),
+    hanken(FontWeight.Normal),
+    hanken(FontWeight.Medium),
+    hanken(FontWeight.SemiBold),
+    hanken(FontWeight.Bold),
 )
 
 private val Typography = AppTypography(
     display = TextStyle(
-        fontFamily = FontFamily.SansSerif,
-        fontWeight = FontWeight.Black,
-        fontSize = 38.sp,
-        lineHeight = 42.sp,
-        letterSpacing = 0.sp,
+        fontFamily = HankenGrotesk,
+        fontWeight = FontWeight.Light,
+        fontSize = 46.sp,
+        lineHeight = 50.sp,
+        letterSpacing = (-0.8).sp,
     ),
     title = TextStyle(
-        fontFamily = FontFamily.SansSerif,
-        fontWeight = FontWeight.ExtraBold,
-        fontSize = 24.sp,
-        lineHeight = 30.sp,
-        letterSpacing = 0.sp,
+        fontFamily = HankenGrotesk,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = 22.sp,
+        lineHeight = 28.sp,
+        letterSpacing = (-0.3).sp,
     ),
     subtitle = TextStyle(
-        fontFamily = FontFamily.SansSerif,
-        fontWeight = FontWeight.Bold,
-        fontSize = 18.sp,
-        lineHeight = 24.sp,
-        letterSpacing = 0.sp,
+        fontFamily = HankenGrotesk,
+        fontWeight = FontWeight.Medium,
+        fontSize = 16.sp,
+        lineHeight = 22.sp,
+        letterSpacing = (-0.1).sp,
     ),
     body = TextStyle(
-        fontFamily = FontFamily.SansSerif,
-        fontWeight = FontWeight.Medium,
+        fontFamily = HankenGrotesk,
+        fontWeight = FontWeight.Normal,
         fontSize = 15.sp,
-        lineHeight = 21.sp,
+        lineHeight = 22.sp,
         letterSpacing = 0.sp,
     ),
     label = TextStyle(
-        fontFamily = FontFamily.SansSerif,
-        fontWeight = FontWeight.ExtraBold,
+        fontFamily = HankenGrotesk,
+        fontWeight = FontWeight.SemiBold,
         fontSize = 13.sp,
         lineHeight = 17.sp,
-        letterSpacing = 0.sp,
+        letterSpacing = 0.2.sp,
     ),
     small = TextStyle(
-        fontFamily = FontFamily.SansSerif,
-        fontWeight = FontWeight.Bold,
+        fontFamily = HankenGrotesk,
+        fontWeight = FontWeight.Medium,
         fontSize = 12.sp,
         lineHeight = 16.sp,
-        letterSpacing = 0.sp,
+        letterSpacing = 0.1.sp,
     ),
 )
 
@@ -232,12 +265,40 @@ fun HealthConnectorTheme(
     )
 }
 
+/**
+ * The app ground: the base background plus two faint, oversized radial glows (a jade wash from the
+ * top-left, a cooler sky wash from the right) that give the screen quiet depth without reading as
+ * decoration. Subtle by design — most visible in dark mode, a whisper in light.
+ */
+@Composable
+fun Modifier.ambientBackground(): Modifier {
+    val colors = HealthTheme.colors
+    return this
+        .background(colors.background)
+        .drawBehind {
+            drawRect(
+                Brush.radialGradient(
+                    colors = listOf(colors.primary.copy(alpha = 0.08f), Color.Transparent),
+                    center = Offset(size.width * 0.16f, size.height * 0.04f),
+                    radius = size.maxDimension * 0.62f,
+                ),
+            )
+            drawRect(
+                Brush.radialGradient(
+                    colors = listOf(colors.blue.copy(alpha = 0.05f), Color.Transparent),
+                    center = Offset(size.width * 0.98f, size.height * 0.30f),
+                    radius = size.maxDimension * 0.55f,
+                ),
+            )
+        }
+}
+
 @Composable
 fun AppSurface(content: @Composable () -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(HealthTheme.colors.background),
+            .ambientBackground(),
     ) {
         content()
     }
@@ -271,16 +332,19 @@ fun AppCard(
     modifier: Modifier = Modifier,
     background: Color = HealthTheme.colors.surface,
     border: Color = HealthTheme.colors.border,
-    radius: Dp = 8.dp,
-    padding: PaddingValues = PaddingValues(16.dp),
+    radius: Dp = 22.dp,
+    padding: PaddingValues = PaddingValues(18.dp),
     content: @Composable () -> Unit,
 ) {
+    val shape = RoundedCornerShape(radius)
     Box(
         modifier = modifier
-            .shadow(3.dp, RoundedCornerShape(radius), ambientColor = HealthTheme.colors.shadow, spotColor = HealthTheme.colors.shadow)
-            .clip(RoundedCornerShape(radius))
+            .shadow(16.dp, shape, ambientColor = HealthTheme.colors.shadow, spotColor = HealthTheme.colors.shadow)
+            .clip(shape)
             .background(background)
-            .border(BorderStroke(1.dp, border), RoundedCornerShape(radius))
+            // Frosted-glass highlight: a soft top-edge sheen fading to nothing over the base surface.
+            .background(Brush.verticalGradient(listOf(HealthTheme.colors.sheen, Color.Transparent)))
+            .border(BorderStroke(1.dp, border), shape)
             .padding(padding),
     ) {
         content()
@@ -297,30 +361,35 @@ fun AppButton(
     leadingIconRes: Int? = null,
 ) {
     val colors = HealthTheme.colors
+    // High-contrast neutral primary (ink on light, near-white on dark) — always accessible and
+    // premium; the accent green is reserved for status. Secondary is a hairline glass chip.
     val background = when {
-        !enabled -> colors.border
-        secondary -> colors.blueSoft
-        else -> colors.primary
+        !enabled -> colors.surfaceStrong
+        secondary -> colors.surfaceStrong
+        else -> colors.ink
     }
     val foreground = when {
         !enabled -> colors.muted
         secondary -> colors.ink
-        else -> Color.White
+        else -> colors.surface
     }
-    val bottom = when {
-        !enabled -> colors.border
-        secondary -> colors.blue
-        else -> colors.primaryDark
-    }
+    val shape = RoundedCornerShape(16.dp)
+    val glow = if (enabled && !secondary) colors.primary.copy(alpha = 0.35f) else Color.Transparent
+    val interaction = remember { MutableInteractionSource() }
     Box(
         modifier = modifier
             .height(52.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .background(bottom)
-            .clickable(enabled = enabled, onClick = onClick)
-            .padding(bottom = 4.dp)
-            .clip(RoundedCornerShape(14.dp))
-            .background(background),
+            .pressScale(interaction)
+            .shadow(14.dp, shape, ambientColor = Color.Transparent, spotColor = glow)
+            .clip(shape)
+            .background(background)
+            .then(if (secondary) Modifier.border(BorderStroke(1.dp, colors.border), shape) else Modifier)
+            .clickable(
+                interactionSource = interaction,
+                indication = LocalIndication.current,
+                enabled = enabled,
+                onClick = onClick,
+            ),
         contentAlignment = Alignment.Center,
     ) {
         Row(
@@ -355,10 +424,16 @@ fun TextButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val interaction = remember { MutableInteractionSource() }
     Box(
         modifier = modifier
+            .pressScale(interaction)
             .clip(RoundedCornerShape(14.dp))
-            .clickable(onClick = onClick)
+            .clickable(
+                interactionSource = interaction,
+                indication = LocalIndication.current,
+                onClick = onClick,
+            )
             .padding(horizontal = 12.dp, vertical = 10.dp),
         contentAlignment = Alignment.Center,
     ) {
@@ -476,7 +551,7 @@ fun ProgressBar(
     val clamped = progress.coerceIn(0f, 1f)
     Box(
         modifier = modifier
-            .height(12.dp)
+            .height(7.dp)
             .clip(RoundedCornerShape(999.dp))
             .background(trackColor),
     ) {
@@ -485,7 +560,8 @@ fun ProgressBar(
                 .fillMaxHeight()
                 .fillMaxWidth(clamped)
                 .clip(RoundedCornerShape(999.dp))
-                .background(color),
+                // Subtle sheen along the fill so the bar reads as a lit, glassy element.
+                .background(Brush.horizontalGradient(listOf(color, lerp(color, Color.White, 0.22f)))),
         )
     }
 }
@@ -653,6 +729,8 @@ enum class AppIconKind(val imageVector: ImageVector) {
     TREND_UP(Icons.AutoMirrored.Rounded.TrendingUp),
     TREND_DOWN(Icons.Rounded.TrendingDown),
     TREND_FLAT(Icons.Rounded.TrendingFlat),
+    STAR(Icons.Rounded.Star),
+    COOKIE(Icons.Rounded.Cookie),
 }
 
 /**
@@ -685,11 +763,13 @@ fun IconButton(
         ghost -> colors.muted
         else -> colors.ink
     }
+    val interaction = remember { MutableInteractionSource() }
     Box(
         modifier = modifier
+            .pressScale(interaction, pressedScale = 0.88f)
             .then(base)
             .clickable(
-                interactionSource = remember { MutableInteractionSource() },
+                interactionSource = interaction,
                 indication = null,
                 enabled = enabled,
                 onClick = onClick,

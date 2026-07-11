@@ -3,6 +3,7 @@ plugins {
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.kotlin.plugin.serialization")
+    id("com.android.compose.screenshot") version "0.0.1-alpha15"
 }
 
 android {
@@ -61,6 +62,9 @@ android {
         compose = true
     }
 
+    // (temporary) enable Compose screenshot preview rendering
+    experimentalProperties["android.experimental.enableScreenshotTest"] = true
+
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
@@ -117,4 +121,8 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
+
+    // (temporary) Compose preview screenshot rendering
+    screenshotTestImplementation(composeBom)
+    screenshotTestImplementation("androidx.compose.ui:ui-tooling")
 }

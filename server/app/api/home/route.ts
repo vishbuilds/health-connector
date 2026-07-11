@@ -7,8 +7,9 @@ import { deriveBmrKcalPerDay, getUserProfile } from "@/lib/profile";
 /**
  * Device-facing Home data for a bodyweight / body-recomposition goal. The screen is built around one
  * dominant signal — the bodyweight trend (the actual scoreboard for recomp) — plus four supporting
- * "levers": protein (daily), training (weekly sessions), steps (daily), and calorie balance
- * (deficit/surplus, daily). Everything is computed server-side so the phone stays thin. Authenticated with the same
+ * "levers", shown in this order: calorie balance (deficit/surplus, daily), protein (daily),
+ * training (weekly sessions), and steps (daily). Everything is computed server-side so the phone
+ * stays thin. Authenticated with the same
  * INGEST_SECRET bearer as /api/ingest and /api/writes (see lib/device-auth.ts).
  *
  * "Today" and all day-bucketing are in the user's timezone; summed metrics are de-duplicated across
@@ -20,6 +21,7 @@ const USER_TIMEZONE = "Australia/Sydney";
 /** Days of daily weight points to fetch for the sparkline + trend fit. */
 const WEIGHT_WINDOW_DAYS = 28;
 const META_WINDOW_DAYS = 14;
+const CALORIE_FORECAST_LOOKBACK_DAYS = 7;
 const BODY_WEIGHT_CHANGE_FRACTION_PER_WEEK = 0.005; // 0.5% body weight / week
 const KCAL_PER_KG_BODY_WEIGHT = 7700;
 const TARGET_WEIGHT_TOLERANCE_KG = 0.2;
@@ -136,6 +138,19 @@ active_energy_today AS (
     GROUP BY source_app
   ) t
 ),
+workout_energy_today AS (
+  -- Strength-training burn that Hevy logs as a TotalCaloriesBurnedRecord scoped to each workout
+  -- session (not a full-day feed). Oura's accelerometer barely registers lifting, so this is real
+  -- expenditure that active_energy_today misses; add it on top. De-dup across sources the same way
+  -- (sum per source, take the busiest) — today Hevy is the only writer of this record type.
+  SELECT COALESCE(max(t.total), 0) AS v FROM (
+    SELECT source_app, sum(${numericSql("data->>'energyKcal'")}) AS total
+    FROM actual_records, params
+    WHERE record_type = 'TotalCaloriesBurnedRecord'
+      AND (start_time AT TIME ZONE '${USER_TIMEZONE}')::date = params.today
+    GROUP BY source_app
+  ) t
+),
 nutrition_energy_today AS (
   SELECT
     COALESCE((
@@ -181,6 +196,7 @@ SELECT
   protein_today.v     AS protein_today,
   training_week.v     AS training_week,
   active_energy_today.v AS active_energy_today,
+  workout_energy_today.v AS workout_energy_today,
   nutrition_energy_today.v AS nutrition_energy_today,
   steps_7d.v          AS steps_7d,
   (SELECT ${numericSql("data->>'basalMetabolicRateKcalPerDay'")}
@@ -202,7 +218,7 @@ SELECT
      FROM combined_records, params
      WHERE record_type = 'NutritionRecord'
        AND (start_time AT TIME ZONE '${USER_TIMEZONE}')::date = params.today - 1) AS protein_yesterday
-	FROM params, steps_today, protein_today, training_week, active_energy_today, nutrition_energy_today, steps_7d
+	FROM params, steps_today, protein_today, training_week, active_energy_today, workout_energy_today, nutrition_energy_today, steps_7d
 `;
 /**
  * One row per local day (most-recent first) with a body weight, over the trend window. Multiple
@@ -353,6 +369,257 @@ LEFT JOIN rhr_daily ON rhr_daily.day = d.day
 ORDER BY d.day ASC
 `;
 
+const remainingIntakeTrendQuery = (targetDate: string, afterMinute: number) => {
+  const cutoffMinute = Math.max(0, Math.min(24 * 60 - 1, Math.trunc(afterMinute)));
+  return `
+WITH params AS (
+  SELECT DATE '${targetDate}' AS today, ${cutoffMinute}::int AS cutoff_minute
+),
+actual_records AS (
+  SELECT hr.record_type, hr.start_time, hr.data, hr.source_app
+  FROM health_records hr
+  WHERE hr.deleted_at IS NULL
+    AND NOT EXISTS (
+      SELECT 1
+      FROM pending_writes pw
+      WHERE pw.status = 'pending'
+        AND pw.health_connect_id IS NOT NULL
+        AND pw.health_connect_id = hr.id
+    )
+),
+pending_records AS (
+  SELECT pw.record_type, pw.start_time, pw.data, '__pending_writes__'::text AS source_app
+  FROM pending_writes pw
+  WHERE (
+      pw.status = 'pending'
+      OR pw.status = 'applied'
+    )
+    AND NOT EXISTS (
+      SELECT 1
+      FROM health_records hr
+      WHERE hr.deleted_at IS NULL
+        AND pw.health_connect_id IS NOT NULL
+        AND hr.id = pw.health_connect_id
+        AND pw.status = 'applied'
+    )
+),
+days AS (
+  SELECT generate_series(params.today - ${CALORIE_FORECAST_LOOKBACK_DAYS}, params.today - 1, interval '1 day')::date AS day
+  FROM params
+),
+actual_food_daily AS (
+  SELECT
+    (start_time AT TIME ZONE '${USER_TIMEZONE}')::date AS day,
+    source_app,
+    sum(${numericSql("data->>'energyKcal'")}) AS total
+  FROM actual_records, params
+  WHERE record_type = 'NutritionRecord'
+    AND ${numericSql("data->>'energyKcal'")} IS NOT NULL
+    AND (start_time AT TIME ZONE '${USER_TIMEZONE}')::date BETWEEN params.today - ${CALORIE_FORECAST_LOOKBACK_DAYS} AND params.today - 1
+  GROUP BY 1, source_app
+),
+pending_food_daily AS (
+  SELECT
+    (start_time AT TIME ZONE '${USER_TIMEZONE}')::date AS day,
+    sum(${numericSql("data->>'energyKcal'")}) AS total
+  FROM pending_records, params
+  WHERE record_type = 'NutritionRecord'
+    AND ${numericSql("data->>'energyKcal'")} IS NOT NULL
+    AND (start_time AT TIME ZONE '${USER_TIMEZONE}')::date BETWEEN params.today - ${CALORIE_FORECAST_LOOKBACK_DAYS} AND params.today - 1
+  GROUP BY 1
+),
+food_days AS (
+  SELECT
+    days.day,
+    COALESCE((SELECT max(total) FROM actual_food_daily WHERE actual_food_daily.day = days.day), 0)
+      + COALESCE((SELECT sum(total) FROM pending_food_daily WHERE pending_food_daily.day = days.day), 0) AS total
+  FROM days
+),
+actual_daily AS (
+  SELECT
+    (start_time AT TIME ZONE '${USER_TIMEZONE}')::date AS day,
+    CASE
+      WHEN (data->>'mealType') ~ '^[0-9]+$' AND (data->>'mealType')::int = 3 THEN 'dinner'
+      WHEN lower(COALESCE(data->>'name', '')) ~ '(dinner|supper|evening)' THEN 'dinner'
+      WHEN (
+        extract(hour FROM (start_time AT TIME ZONE '${USER_TIMEZONE}'))::int * 60
+        + extract(minute FROM (start_time AT TIME ZONE '${USER_TIMEZONE}'))::int
+      ) >= 17 * 60 THEN 'dinner'
+      WHEN (data->>'mealType') ~ '^[0-9]+$' AND (data->>'mealType')::int = 2 THEN 'lunch'
+      WHEN lower(COALESCE(data->>'name', '')) ~ '(lunch)' THEN 'lunch'
+      WHEN (
+        extract(hour FROM (start_time AT TIME ZONE '${USER_TIMEZONE}'))::int * 60
+        + extract(minute FROM (start_time AT TIME ZONE '${USER_TIMEZONE}'))::int
+      ) BETWEEN 11 * 60 AND 17 * 60 - 1 THEN 'lunch'
+      WHEN (data->>'mealType') ~ '^[0-9]+$' AND (data->>'mealType')::int = 1 THEN 'breakfast'
+      WHEN lower(COALESCE(data->>'name', '')) ~ '(breakfast|brunch)' THEN 'breakfast'
+      WHEN (
+        extract(hour FROM (start_time AT TIME ZONE '${USER_TIMEZONE}'))::int * 60
+        + extract(minute FROM (start_time AT TIME ZONE '${USER_TIMEZONE}'))::int
+      ) < 11 * 60 THEN 'breakfast'
+      ELSE 'snack'
+    END AS bucket,
+    source_app,
+    sum(${numericSql("data->>'energyKcal'")}) AS total
+  FROM actual_records, params
+  WHERE record_type = 'NutritionRecord'
+    AND ${numericSql("data->>'energyKcal'")} IS NOT NULL
+    AND (start_time AT TIME ZONE '${USER_TIMEZONE}')::date BETWEEN params.today - ${CALORIE_FORECAST_LOOKBACK_DAYS} AND params.today - 1
+    AND (
+      extract(hour FROM (start_time AT TIME ZONE '${USER_TIMEZONE}'))::int * 60
+      + extract(minute FROM (start_time AT TIME ZONE '${USER_TIMEZONE}'))::int
+    ) > params.cutoff_minute
+  GROUP BY 1, 2, source_app
+),
+pending_daily AS (
+  SELECT
+    (start_time AT TIME ZONE '${USER_TIMEZONE}')::date AS day,
+    CASE
+      WHEN (data->>'mealType') ~ '^[0-9]+$' AND (data->>'mealType')::int = 3 THEN 'dinner'
+      WHEN lower(COALESCE(data->>'name', '')) ~ '(dinner|supper|evening)' THEN 'dinner'
+      WHEN (
+        extract(hour FROM (start_time AT TIME ZONE '${USER_TIMEZONE}'))::int * 60
+        + extract(minute FROM (start_time AT TIME ZONE '${USER_TIMEZONE}'))::int
+      ) >= 17 * 60 THEN 'dinner'
+      WHEN (data->>'mealType') ~ '^[0-9]+$' AND (data->>'mealType')::int = 2 THEN 'lunch'
+      WHEN lower(COALESCE(data->>'name', '')) ~ '(lunch)' THEN 'lunch'
+      WHEN (
+        extract(hour FROM (start_time AT TIME ZONE '${USER_TIMEZONE}'))::int * 60
+        + extract(minute FROM (start_time AT TIME ZONE '${USER_TIMEZONE}'))::int
+      ) BETWEEN 11 * 60 AND 17 * 60 - 1 THEN 'lunch'
+      WHEN (data->>'mealType') ~ '^[0-9]+$' AND (data->>'mealType')::int = 1 THEN 'breakfast'
+      WHEN lower(COALESCE(data->>'name', '')) ~ '(breakfast|brunch)' THEN 'breakfast'
+      WHEN (
+        extract(hour FROM (start_time AT TIME ZONE '${USER_TIMEZONE}'))::int * 60
+        + extract(minute FROM (start_time AT TIME ZONE '${USER_TIMEZONE}'))::int
+      ) < 11 * 60 THEN 'breakfast'
+      ELSE 'snack'
+    END AS bucket,
+    sum(${numericSql("data->>'energyKcal'")}) AS total
+  FROM pending_records, params
+  WHERE record_type = 'NutritionRecord'
+    AND ${numericSql("data->>'energyKcal'")} IS NOT NULL
+    AND (start_time AT TIME ZONE '${USER_TIMEZONE}')::date BETWEEN params.today - ${CALORIE_FORECAST_LOOKBACK_DAYS} AND params.today - 1
+    AND (
+      extract(hour FROM (start_time AT TIME ZONE '${USER_TIMEZONE}'))::int * 60
+      + extract(minute FROM (start_time AT TIME ZONE '${USER_TIMEZONE}'))::int
+    ) > params.cutoff_minute
+  GROUP BY 1, 2
+),
+actual_future AS (
+  SELECT
+    CASE
+      WHEN (data->>'mealType') ~ '^[0-9]+$' AND (data->>'mealType')::int = 3 THEN 'dinner'
+      WHEN lower(COALESCE(data->>'name', '')) ~ '(dinner|supper|evening)' THEN 'dinner'
+      WHEN (
+        extract(hour FROM (start_time AT TIME ZONE '${USER_TIMEZONE}'))::int * 60
+        + extract(minute FROM (start_time AT TIME ZONE '${USER_TIMEZONE}'))::int
+      ) >= 17 * 60 THEN 'dinner'
+      WHEN (data->>'mealType') ~ '^[0-9]+$' AND (data->>'mealType')::int = 2 THEN 'lunch'
+      WHEN lower(COALESCE(data->>'name', '')) ~ '(lunch)' THEN 'lunch'
+      WHEN (
+        extract(hour FROM (start_time AT TIME ZONE '${USER_TIMEZONE}'))::int * 60
+        + extract(minute FROM (start_time AT TIME ZONE '${USER_TIMEZONE}'))::int
+      ) BETWEEN 11 * 60 AND 17 * 60 - 1 THEN 'lunch'
+      WHEN (data->>'mealType') ~ '^[0-9]+$' AND (data->>'mealType')::int = 1 THEN 'breakfast'
+      WHEN lower(COALESCE(data->>'name', '')) ~ '(breakfast|brunch)' THEN 'breakfast'
+      WHEN (
+        extract(hour FROM (start_time AT TIME ZONE '${USER_TIMEZONE}'))::int * 60
+        + extract(minute FROM (start_time AT TIME ZONE '${USER_TIMEZONE}'))::int
+      ) < 11 * 60 THEN 'breakfast'
+      ELSE 'snack'
+    END AS bucket,
+    source_app,
+    sum(${numericSql("data->>'energyKcal'")}) AS total
+  FROM actual_records, params
+  WHERE record_type = 'NutritionRecord'
+    AND ${numericSql("data->>'energyKcal'")} IS NOT NULL
+    AND (start_time AT TIME ZONE '${USER_TIMEZONE}')::date = params.today
+    AND (
+      extract(hour FROM (start_time AT TIME ZONE '${USER_TIMEZONE}'))::int * 60
+      + extract(minute FROM (start_time AT TIME ZONE '${USER_TIMEZONE}'))::int
+    ) > params.cutoff_minute
+  GROUP BY 1, source_app
+),
+pending_future AS (
+  SELECT
+    CASE
+      WHEN (data->>'mealType') ~ '^[0-9]+$' AND (data->>'mealType')::int = 3 THEN 'dinner'
+      WHEN lower(COALESCE(data->>'name', '')) ~ '(dinner|supper|evening)' THEN 'dinner'
+      WHEN (
+        extract(hour FROM (start_time AT TIME ZONE '${USER_TIMEZONE}'))::int * 60
+        + extract(minute FROM (start_time AT TIME ZONE '${USER_TIMEZONE}'))::int
+      ) >= 17 * 60 THEN 'dinner'
+      WHEN (data->>'mealType') ~ '^[0-9]+$' AND (data->>'mealType')::int = 2 THEN 'lunch'
+      WHEN lower(COALESCE(data->>'name', '')) ~ '(lunch)' THEN 'lunch'
+      WHEN (
+        extract(hour FROM (start_time AT TIME ZONE '${USER_TIMEZONE}'))::int * 60
+        + extract(minute FROM (start_time AT TIME ZONE '${USER_TIMEZONE}'))::int
+      ) BETWEEN 11 * 60 AND 17 * 60 - 1 THEN 'lunch'
+      WHEN (data->>'mealType') ~ '^[0-9]+$' AND (data->>'mealType')::int = 1 THEN 'breakfast'
+      WHEN lower(COALESCE(data->>'name', '')) ~ '(breakfast|brunch)' THEN 'breakfast'
+      WHEN (
+        extract(hour FROM (start_time AT TIME ZONE '${USER_TIMEZONE}'))::int * 60
+        + extract(minute FROM (start_time AT TIME ZONE '${USER_TIMEZONE}'))::int
+      ) < 11 * 60 THEN 'breakfast'
+      ELSE 'snack'
+    END AS bucket,
+    sum(${numericSql("data->>'energyKcal'")}) AS total
+  FROM pending_records, params
+  WHERE record_type = 'NutritionRecord'
+    AND ${numericSql("data->>'energyKcal'")} IS NOT NULL
+    AND (start_time AT TIME ZONE '${USER_TIMEZONE}')::date = params.today
+    AND (
+      extract(hour FROM (start_time AT TIME ZONE '${USER_TIMEZONE}'))::int * 60
+      + extract(minute FROM (start_time AT TIME ZONE '${USER_TIMEZONE}'))::int
+    ) > params.cutoff_minute
+  GROUP BY 1
+),
+future_buckets AS (
+  SELECT
+    bucket,
+    COALESCE((SELECT max(total) FROM actual_future af WHERE af.bucket = b.bucket), 0)
+      + COALESCE((SELECT sum(total) FROM pending_future pf WHERE pf.bucket = b.bucket), 0) AS total
+  FROM (
+    SELECT bucket FROM actual_future
+    UNION
+    SELECT bucket FROM pending_future
+  ) b
+),
+historical_bucket_totals AS (
+  SELECT day, bucket, max(total) AS total
+  FROM actual_daily
+  GROUP BY day, bucket
+  UNION ALL
+  SELECT day, bucket, sum(total) AS total
+  FROM pending_daily
+  GROUP BY day, bucket
+),
+day_totals AS (
+  SELECT
+    food_days.day,
+    COALESCE(sum(historical_bucket_totals.total) FILTER (
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM future_buckets
+        WHERE future_buckets.bucket = historical_bucket_totals.bucket
+          AND future_buckets.total > 0
+      )
+    ), 0) AS total
+  FROM food_days
+  LEFT JOIN historical_bucket_totals ON historical_bucket_totals.day = food_days.day
+  WHERE food_days.total > 0
+  GROUP BY food_days.day
+)
+SELECT
+  avg(total) AS remaining_energy,
+  count(*) AS sample_days,
+  COALESCE((SELECT sum(total) FROM future_buckets), 0) AS planned_future_energy,
+  COALESCE((SELECT count(*) FROM future_buckets WHERE total > 0), 0) AS planned_bucket_count
+FROM day_totals
+`;
+};
+
 const homeDetailRowsQuery = (targetDate: string) => `
 WITH params AS (
   SELECT DATE '${targetDate}' AS today
@@ -474,6 +741,26 @@ active_burn_logs AS (
       FROM active_burn_source_totals
       WHERE total = (SELECT total FROM max_actual_active_burn)
     )
+),
+workout_burn_logs AS (
+  -- Per-workout burn (Hevy TotalCaloriesBurnedRecord) logged today. Titled from the matching
+  -- ExerciseSessionRecord (same source + start_time) when present, so the line reads "Push day".
+  SELECT
+    tc.start_time,
+    tc.source_app,
+    ${numericSql("tc.data->>'energyKcal'")} AS kcal,
+    (
+      SELECT COALESCE(NULLIF(ex.data->>'title', ''), 'Workout')
+      FROM actual_records ex
+      WHERE ex.record_type = 'ExerciseSessionRecord'
+        AND ex.source_app = tc.source_app
+        AND ex.start_time = tc.start_time
+      LIMIT 1
+    ) AS title
+  FROM actual_records tc, params
+  WHERE tc.record_type = 'TotalCaloriesBurnedRecord'
+    AND (tc.start_time AT TIME ZONE '${USER_TIMEZONE}')::date = params.today
+    AND ${numericSql("tc.data->>'energyKcal'")} IS NOT NULL
 ),
 training_logs AS (
   SELECT
@@ -611,7 +898,18 @@ SELECT
         concat(round(kcal)::text, ' kcal') AS value
       FROM active_burn_logs
     ) active_items
-  ), '[]'::jsonb) AS active_burn_items
+  ), '[]'::jsonb) AS active_burn_items,
+  COALESCE((
+    SELECT jsonb_agg(jsonb_build_object('time', time, 'label', label, 'value', value) ORDER BY sort_key)
+    FROM (
+      SELECT
+        start_time AS sort_key,
+        to_char(start_time AT TIME ZONE '${USER_TIMEZONE}', 'HH24:MI') AS time,
+        title AS label,
+        concat(round(kcal)::text, ' kcal') AS value
+      FROM workout_burn_logs
+    ) workout_items
+  ), '[]'::jsonb) AS workout_burn_items
 `;
 
 /** Numeric columns come back from the pg driver as strings (or null); coerce, treating null as null. */
@@ -630,7 +928,7 @@ interface LeverLineItem {
   time?: string;
 }
 
-/** A supporting lever tile (protein / training / steps / calorie balance). */
+/** A supporting lever tile (protein / training / calorie balance). */
 interface Lever {
   key: string;
   title: string;
@@ -643,6 +941,11 @@ interface Lever {
   period: "day" | "week"; // "week" tiles read "this week"
   detail: string; // e.g. "142 / 150 g"
   action: string; // concise recovery/action copy kept for API consumers outside the Home card
+  forecastValue?: number;
+  forecastScore?: number;
+  forecastLabel?: string;
+  forecastStatus?: StatusKey;
+  forecastDetail?: string;
   lineItems: LeverLineItem[];
 }
 
@@ -759,8 +1062,8 @@ function statusFromScore(score: number): StatusKey {
 }
 
 /**
- * The active window we pace cumulative daily metrics against. Steps/protein accumulate through the
- * waking day, so at 9am nobody has hit their daily target yet — judging them against the *full* goal
+ * The active window we pace cumulative daily metrics against. Protein accumulates through the
+ * waking day, so at 9am nobody has hit their daily target yet — judging it against the *full* goal
  * would flag every morning as "behind" (red). Instead we pace them against how far into this window
  * we are right now, so an empty tile in the morning reads "on track".
  */
@@ -1137,7 +1440,7 @@ function buildWeightHero(
       score = 62;
       label = "Stalled";
       status = "fair";
-      action = "Weight is flat. A small calorie trim or more steps restarts the loss.";
+      action = "Weight is flat. A small calorie trim can restart the loss.";
     } else {
       score = 34;
       label = "Trending up";
@@ -1178,15 +1481,45 @@ function dailyLever(
   };
 }
 
+function energyBalanceScoreFor(value: number, target: EnergyBalanceTarget): number {
+  if (target.dailyTarget === null) return 0;
+  if (target.direction === "loss") {
+    const targetDeficit = Math.max(1, Math.abs(target.dailyTarget));
+    return clampScore((Math.max(0, -value) / targetDeficit) * 100);
+  }
+  if (target.direction === "gain") {
+    const targetSurplus = Math.max(1, Math.abs(target.dailyTarget));
+    return clampScore((Math.max(0, value) / targetSurplus) * 100);
+  }
+  const tolerance = 125;
+  return clampScore(100 - (Math.abs(value - target.dailyTarget) / tolerance) * 30);
+}
+
+function energyBalanceLabelFor(value: number, target: EnergyBalanceTarget, score: number): string {
+  if (target.dailyTarget === null) return "Need weight";
+  if (target.direction === "loss") {
+    return value <= target.dailyTarget ? "Deficit met" : score >= 70 ? "Near target" : "Deficit short";
+  }
+  if (target.direction === "gain") {
+    return value >= target.dailyTarget ? "Surplus met" : score >= 70 ? "Near target" : "Surplus short";
+  }
+  return Math.abs(value - target.dailyTarget) <= 125 ? "Balanced" : value < 0 ? "Deficit" : "Surplus";
+}
+
 function energyBalanceLever(
   value: number,
   target: EnergyBalanceTarget,
   intakeEnergy: number,
   burnedEnergy: number,
-  dayFrac: number,
+  forecastRemainingIntakeEnergy: number,
+  forecastSampleDays: number,
+  plannedFutureEnergy: number,
+  plannedBucketCount: number,
 ): Lever {
   const roundedValue = Math.round(value);
   const title = "Calorie balance";
+  const forecastIntakeEnergy = intakeEnergy + Math.max(0, forecastRemainingIntakeEnergy);
+  const forecastValue = Math.round(forecastIntakeEnergy - burnedEnergy);
 
   if (target.dailyTarget === null) {
     return {
@@ -1222,27 +1555,26 @@ function energyBalanceLever(
     };
   }
 
-  const expected = target.dailyTarget * dayFrac;
-  const tolerance = Math.max(125, Math.abs(target.dailyTarget) * Math.max(dayFrac, 0.5) * 0.35);
-  const distance = Math.abs(roundedValue - expected);
-  const score = clampScore(100 - (distance / tolerance) * 30);
+  const score = energyBalanceScoreFor(roundedValue, target);
   const status = statusFromScore(score);
-
-  let label: string;
-  if (score >= 85) {
-    label = target.direction === "maintenance" ? "Balanced" : "On target";
-  } else if (target.direction === "loss") {
-    label = roundedValue < expected ? "Deep deficit" : "Deficit short";
-  } else if (target.direction === "gain") {
-    label = roundedValue > expected ? "Surplus high" : "Surplus short";
-  } else {
-    label = roundedValue < expected ? "Deficit" : "Surplus";
-  }
+  const label = energyBalanceLabelFor(roundedValue, target, score);
+  const forecastScore = energyBalanceScoreFor(forecastValue, target);
+  const forecastStatus = statusFromScore(forecastScore);
+  const forecastLabel = energyBalanceLabelFor(forecastValue, target, forecastScore);
 
   const targetText = formatSignedKcal(target.dailyTarget);
+  const forecastText = formatSignedKcal(forecastValue);
+  const plannedText =
+    plannedFutureEnergy > 0
+      ? `current intake already includes planned future food (+${formatKcal(plannedFutureEnergy)})`
+      : "current intake";
+  const trendText =
+    forecastSampleDays > 0 && forecastRemainingIntakeEnergy > 0
+      ? `from ${plannedText} plus recent unmatched food after this time (+${formatKcal(forecastRemainingIntakeEnergy)})`
+      : plannedBucketCount > 0
+        ? `from ${plannedText}; matching future meal window already logged`
+        : "from current intake; no recent food after this time";
   const intakeNote = intakeEnergy <= 0 ? " Log food to make this reliable." : "";
-  const directionText =
-    target.direction === "gain" ? "surplus" : target.direction === "maintenance" ? "maintenance" : "deficit";
 
   return {
     key: "energy_balance",
@@ -1255,10 +1587,12 @@ function energyBalanceLever(
     unit: "kcal",
     period: "day",
     detail: `${formatSignedKcal(roundedValue)} / target ${targetText}`,
-    action:
-      score >= 85
-        ? `Calorie balance is on target for ${directionText}.${intakeNote}`
-        : `Aim for ${targetText} today, derived from ${target.basisWeightKg?.toFixed(1) ?? "latest"} kg at 0.5%/week.${intakeNote}`,
+    action: `Forecast ${forecastText} ${trendText}; target ${targetText}.${intakeNote}`,
+    forecastValue,
+    forecastScore,
+    forecastLabel,
+    forecastStatus,
+    forecastDetail: `${forecastText} likely by end of day`,
     lineItems: [],
   };
 }
@@ -1286,17 +1620,20 @@ export async function GET(request: NextRequest) {
   let weightRows: Record<string, unknown>[] = [];
   let recoveryRows: Record<string, unknown>[] = [];
   let detailRow: Record<string, unknown> = {};
+  let remainingIntakeRows: Record<string, unknown>[] = [];
   try {
-    const [rows, weights, recoveryHistory, detailRows] = await Promise.all([
+    const [rows, weights, recoveryHistory, detailRows, remainingRows] = await Promise.all([
       runReadOnlyQuery(homeQuery(targetDate)),
       runReadOnlyQuery(weightSeriesQuery(targetDate)),
       runReadOnlyQuery(recoverySeriesQuery(targetDate)),
       runReadOnlyQuery(homeDetailRowsQuery(targetDate)),
+      isToday ? runReadOnlyQuery(remainingIntakeTrendQuery(targetDate, now.minutes)) : Promise.resolve([]),
     ]);
     row = rows[0] ?? {};
     weightRows = weights;
     recoveryRows = recoveryHistory;
     detailRow = detailRows[0] ?? {};
+    remainingIntakeRows = remainingRows;
   } catch (e) {
     return NextResponse.json({ error: `query failed: ${(e as Error).message}` }, { status: 500 });
   }
@@ -1310,9 +1647,18 @@ export async function GET(request: NextRequest) {
   const latestWeight = num(row.latest_weight);
   const intakeEnergy = Math.round(num(row.nutrition_energy_today) ?? 0);
   const activeEnergy = Math.round(num(row.active_energy_today) ?? 0);
+  // Hevy workout burn (TotalCaloriesBurnedRecord, scoped per session) — strength training that
+  // wearable active-calorie feeds under-count. Added on top of active burn, not de-duped against it.
+  const workoutEnergy = Math.round(num(row.workout_energy_today) ?? 0);
   const latestBmr = deriveBmrKcalPerDay(latestWeight, bodyFat, targetDate, profile, num(row.latest_bmr)).kcalPerDay;
   const estimatedBasalBurn = latestBmr ?? 0;
-  const burnedEnergy = Math.round(activeEnergy + estimatedBasalBurn);
+  const burnedEnergy = Math.round(activeEnergy + workoutEnergy + estimatedBasalBurn);
+  const forecastRemainingIntakeEnergy = isToday
+    ? Math.round(num(remainingIntakeRows[0]?.remaining_energy) ?? 0)
+    : 0;
+  const forecastSampleDays = isToday ? Math.round(num(remainingIntakeRows[0]?.sample_days) ?? 0) : 0;
+  const plannedFutureEnergy = isToday ? Math.round(num(remainingIntakeRows[0]?.planned_future_energy) ?? 0) : 0;
+  const plannedBucketCount = isToday ? Math.round(num(remainingIntakeRows[0]?.planned_bucket_count) ?? 0) : 0;
 
   // Weight series arrives newest → oldest; flip to oldest → newest for the sparkline + fit.
   const series = weightRows
@@ -1327,6 +1673,7 @@ export async function GET(request: NextRequest) {
   const stepItems = lineItemsFrom(detailRow.step_items);
   const trainingItems = lineItemsFrom(detailRow.training_items);
   const activeBurnItems = lineItemsFrom(detailRow.active_burn_items);
+  const workoutBurnItems = lineItemsFrom(detailRow.workout_burn_items);
 
   // --- Levers ---------------------------------------------------------------
   const protein_lever: Lever = {
@@ -1339,7 +1686,6 @@ export async function GET(request: NextRequest) {
     ),
     lineItems: stepItems,
   };
-
   // Training: a weekly count, always judged against the full week (no intra-week pacing).
   const trainScore = scoreFromGoal(trainingSessions, goals.weeklyWorkoutTarget);
   const trainStatus: { label: string; status: StatusKey } =
@@ -1370,22 +1716,34 @@ export async function GET(request: NextRequest) {
     ],
   };
 
-  // Calorie balance: intake - estimated daily expenditure (active burn + a full-day basal burn).
-  // Raw TotalCaloriesBurnedRecord rows are interval records and are not treated as full-day burn.
+  // Calorie balance: intake - estimated daily expenditure (active burn + per-session workout burn
+  // + a full-day basal burn). Wearable active-calorie feeds under-count strength training, so Hevy's
+  // per-workout TotalCaloriesBurnedRecord is folded in on top rather than treated as a full-day feed.
+  // The displayed balance and status are actual so far. The action copy forecasts the final balance
+  // by adding the recent trend for food logged after the current clock time.
   // The target is derived from the latest bodyweight at 0.5% body weight per week, with sign chosen
   // by goal weight direction (deficit / surplus / maintenance).
   const balanceTarget = calorieTargetFromWeight(latestWeight, goals);
-  const fullDayFraction = 1;
   const energy_lever: Lever = {
-    ...energyBalanceLever(intakeEnergy - burnedEnergy, balanceTarget, intakeEnergy, burnedEnergy, fullDayFraction),
+    ...energyBalanceLever(
+      intakeEnergy - burnedEnergy,
+      balanceTarget,
+      intakeEnergy,
+      burnedEnergy,
+      forecastRemainingIntakeEnergy,
+      forecastSampleDays,
+      plannedFutureEnergy,
+      plannedBucketCount,
+    ),
     lineItems: [
       ...signedLineItems(intakeItems, "Food · ", "+"),
       ...signedLineItems(activeBurnItems, "Burn · ", "-"),
+      ...signedLineItems(workoutBurnItems, "Workout · ", "-"),
       { label: "Basal estimate", value: formatSignedKcal(-estimatedBasalBurn) },
     ],
   };
 
-  const levers: Lever[] = [protein_lever, training_lever, steps_lever, energy_lever];
+  const levers: Lever[] = [energy_lever, protein_lever, training_lever, steps_lever];
 
   // Overall "recomp" score: the weight trend is the objective, so it carries the most weight; the
   // levers are how you steer it. 55% weight / 45% split across the four levers.
@@ -1393,7 +1751,7 @@ export async function GET(request: NextRequest) {
   const overallScore = Math.round(weight.score * 0.55 + leverAvg * 0.45);
   const overall = { score: overallScore, ...paceStatus(overallScore, overallScore) };
 
-  const insights = buildInsights(row, goals, weight, levers, isToday);
+  const insights = buildInsights(goals, weight, levers, isToday);
 
   return NextResponse.json({
     date: (row.date as string) ?? targetDate,
@@ -1409,11 +1767,10 @@ export async function GET(request: NextRequest) {
 
 /**
  * Deterministic, rule-based insight strings. Recomp-relevant: protein gap (muscle retention),
- * weight trend momentum, training gap, steps vs typical. Every rule guards against null/missing
+ * weight trend momentum, and training gap. Every rule guards against null/missing
  * data (skip, never emit NaN). Capped at 4. Nothing here calls an LLM.
  */
 function buildInsights(
-  row: Record<string, unknown>,
   goals: Goals,
   weight: WeightHero,
   levers: Lever[],
@@ -1422,7 +1779,6 @@ function buildInsights(
   const insights: string[] = [];
   const fmt = (n: number) => Math.round(n).toLocaleString("en-US");
   const protein = levers.find((l) => l.key === "protein")!;
-  const steps = levers.find((l) => l.key === "steps")!;
   const training = levers.find((l) => l.key === "training")!;
 
   // 1. Weight trend headline (the objective).
@@ -1464,15 +1820,6 @@ function buildInsights(
   if (training.value < goals.weeklyWorkoutTarget) {
     const left = goals.weeklyWorkoutTarget - training.value;
     insights.push(`${left} more ${left === 1 ? "session" : "sessions"} to hit ${goals.weeklyWorkoutTarget} this week`);
-  }
-
-  // 4. Steps momentum vs the 7-day average (a proxy for NEAT / daily activity).
-  const steps7d = num(row.steps_7d);
-  if (steps7d !== null && steps7d > 0) {
-    const pct = Math.round(((steps.value - steps7d) / steps7d) * 100);
-    if (Math.abs(pct) >= 10) {
-      insights.push(`Steps ${pct > 0 ? "ahead of" : "behind"} your typical day by ${Math.abs(pct)}%`);
-    }
   }
 
   return insights.slice(0, 4);

@@ -51,7 +51,7 @@ data class HomeWeight(
 )
 
 /**
- * A supporting lever tile (protein / training / steps / calorie balance). [goal] can be negative for
+ * A supporting lever tile (calorie balance / protein / training / steps). [goal] can be negative for
  * calorie deficit targets. [period] is "day" or "week"; a week tile reads "this week".
  */
 data class HomeLever(
@@ -66,6 +66,11 @@ data class HomeLever(
     val period: String,
     val detail: String,
     val action: String,
+    val forecastValue: Double? = null,
+    val forecastScore: Int? = null,
+    val forecastLabel: String? = null,
+    val forecastStatus: String? = null,
+    val forecastDetail: String? = null,
     val lineItems: List<HomeLeverLineItem>,
 )
 
@@ -211,6 +216,11 @@ class HomeApi(private val settingsStore: SettingsStore) {
         period = this["period"]?.jsonPrimitive?.contentOrNull ?: "day",
         detail = this["detail"]?.jsonPrimitive?.contentOrNull ?: "",
         action = this["action"]?.jsonPrimitive?.contentOrNull ?: "",
+        forecastValue = this["forecastValue"]?.jsonPrimitive?.doubleOrNull,
+        forecastScore = this["forecastScore"]?.jsonPrimitive?.intOrNull,
+        forecastLabel = this["forecastLabel"]?.jsonPrimitive?.contentOrNull,
+        forecastStatus = this["forecastStatus"]?.jsonPrimitive?.contentOrNull,
+        forecastDetail = this["forecastDetail"]?.jsonPrimitive?.contentOrNull,
         lineItems = this["lineItems"]?.jsonArray?.mapNotNull { el ->
             val o = el.jsonObject
             val label = o["label"]?.jsonPrimitive?.contentOrNull
