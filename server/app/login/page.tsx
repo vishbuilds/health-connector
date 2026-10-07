@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { authClient } from "@/lib/auth-client";
 
 export default function LoginPage() {
@@ -8,6 +8,9 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Read after mount (not during render) so SSR and hydration agree on the link's href.
+  const [search, setSearch] = useState("");
+  useEffect(() => setSearch(window.location.search), []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -59,6 +62,9 @@ export default function LoginPage() {
           {submitting ? "Signing in..." : "Sign in"}
         </button>
       </form>
+      <p>
+        <a href={`/reset-password${search}`}>Forgot password?</a>
+      </p>
     </main>
   );
 }

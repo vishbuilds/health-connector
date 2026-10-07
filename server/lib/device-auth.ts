@@ -16,10 +16,13 @@ export function isDeviceAuthorized(request: NextRequest): boolean {
   const header = request.headers.get("authorization") ?? "";
   const prefix = "Bearer ";
   if (!header.startsWith(prefix)) return false;
-  const token = header.slice(prefix.length);
+  return secretMatches(header.slice(prefix.length), secret);
+}
 
-  const tokenBuf = Buffer.from(token);
+/** Constant-time string comparison for shared secrets. */
+export function secretMatches(candidate: string, secret: string): boolean {
+  const candidateBuf = Buffer.from(candidate);
   const secretBuf = Buffer.from(secret);
-  if (tokenBuf.length !== secretBuf.length) return false;
-  return timingSafeEqual(tokenBuf, secretBuf);
+  if (candidateBuf.length !== secretBuf.length) return false;
+  return timingSafeEqual(candidateBuf, secretBuf);
 }

@@ -58,6 +58,8 @@ To build/run from Android Studio instead: open `android/`, let Gradle sync (it w
 
 In Claude, add a Custom Connector pointing at `https://<your-deployment>.vercel.app/api/mcp`. Claude will redirect you to sign in with the owner account seeded above; after that one-time login, Claude has a small, general surface.
 
+**Forgot the password?** Click "Forgot password?" on the sign-in page (or go to `/reset-password`). There's no email provider, so the recovery key is your `INGEST_SECRET` (find it in the Vercel project's environment variables). Resetting signs out every existing session, and the reset page sends you back to the in-progress connector sign-in.
+
 **Tools**
 
 - `query_health_data` — run a single read-only SQL query (`SELECT` / `WITH`) over the `health_records` and `pending_writes` tables and get rows back as JSON. This is the one read primitive: raw records, "latest of a type", daily/weekly aggregates, cross-type joins, and write-queue status are all just queries. It runs inside a `READ ONLY` transaction with a statement timeout, so writes are impossible and runaway scans are bounded.
