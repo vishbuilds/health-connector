@@ -117,7 +117,7 @@ private val AXIS_DATE_FORMAT = DateTimeFormatter.ofPattern("MMM d")
 private sealed class HomeUiState {
     object Loading : HomeUiState()
     object Empty : HomeUiState()
-    data class Error(val message: String) : HomeUiState()
+    data class Error(val message: String, val tokenRejected: Boolean = false) : HomeUiState()
     data class Loaded(val summary: HomeSummary) : HomeUiState()
 }
 
@@ -216,6 +216,8 @@ fun HomeScreen(onOpenMenu: () -> Unit) {
                             )
                             is HomeUiState.Error -> HomeError(
                                 message = current.message,
+                                tokenRejected = current.tokenRejected,
+                                onOpenMenu = onOpenMenu,
                                 onRetry = { reloadKeys[key] = (reloadKeys[key] ?: 0) + 1 },
                             )
                             is HomeUiState.Loaded -> HomeLoaded(
@@ -279,7 +281,14 @@ private suspend fun fetchDay(
     val dateParam = if (isToday) null else date.toString()
     return when (val result = HomeApi(SettingsStore(context)).fetchHome(dateParam)) {
         is HomeResult.Success -> HomeUiState.Loaded(result.summary)
-        is HomeResult.HttpError -> HomeUiState.Error("Home request failed (${result.httpCode}).")
+        is HomeResult.HttpError -> if (result.httpCode == 401 || result.httpCode == 403) {
+            HomeUiState.Error(
+                "The server rejected your token. Update it in Menu → Setup → Settings.",
+                tokenRejected = true,
+            )
+        } else {
+            HomeUiState.Error("Home request failed (${result.httpCode}).")
+        }
         is HomeResult.NetworkError -> HomeUiState.Error(result.cause.userFacingMessage())
         HomeResult.NotConfigured -> HomeUiState.Empty
     }
@@ -1405,14 +1414,31 @@ private fun HomeEmpty(
 @Composable
 private fun HomeError(
     message: String,
+    tokenRejected: Boolean,
+    onOpenMenu: () -> Unit,
     onRetry: () -> Unit,
 ) {
-    CenterMessage(
-        title = "Scores unavailable",
-        body = message,
-        primaryText = "Retry",
-        onPrimary = onRetry,
-    )
+    // Always offer a way into Menu: the error card replaces the loaded layout (and its menu footer),
+    // so without this a bad token or URL leaves no path to the settings that would fix it.
+    if (tokenRejected) {
+        CenterMessage(
+            title = "Token rejected",
+            body = message,
+            primaryText = "Open menu",
+            onPrimary = onOpenMenu,
+            secondaryText = "Retry",
+            onSecondary = onRetry,
+        )
+    } else {
+        CenterMessage(
+            title = "Scores unavailable",
+            body = message,
+            primaryText = "Retry",
+            onPrimary = onRetry,
+            secondaryText = "Open menu",
+            onSecondary = onOpenMenu,
+        )
+    }
 }
 
 @Composable
